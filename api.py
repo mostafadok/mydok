@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V5"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V6"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -138,7 +138,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            # تم إضافة الـ Fragments الخاصة بالـ DeliveryStrategy
+            # تم حذف نوع (PickupPointDeliveryStrategy) لأنه غير موجود في قاعدة بيانات المتاجر وبيعمل خطأ Validation
             prop_query = """
             query Proposal($delivery: DeliveryTermsInput, $payment: PaymentTermInput, $merchandise: MerchandiseTermInput, $buyerIdentity: BuyerIdentityTermInput, $sessionInput: SessionTokenInput!) {
               session(sessionInput: $sessionInput) {
@@ -158,7 +158,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                               selectedDeliveryStrategy {
                                 ... on CompleteDeliveryStrategy { handle }
                                 ... on DeliveryStrategyReference { handle }
-                                ... on PickupPointDeliveryStrategy { handle }
                               }
                             }
                           }
