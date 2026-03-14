@@ -21,9 +21,9 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V14 (Match)"):
-    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
-    final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
+def safe_response(msg, raw_data, price, gate="Python Dynamic V15 (Truth)"):
+    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
+    final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": final_msg, "Price": clean_price, "Gate": gate}
 
@@ -86,7 +86,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if add_res.status_code not in [200, 201]: 
                 return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
 
-            # تم زيادة الانتظار بعد إضافة المنتج للسلة لضمان استقرار الجلسة
             time.sleep(1.5)
 
             session.headers.pop("X-Requested-With", None)
@@ -139,6 +138,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
+            # تم إضافة استخراج الـ amount للشحن عشان نبعته مطابق 100%
             prop_query = """
             query Proposal($delivery: DeliveryTermsInput, $payment: PaymentTermInput, $merchandise: MerchandiseTermInput, $buyerIdentity: BuyerIdentityTermInput, $sessionInput: SessionTokenInput!) {
               session(sessionInput: $sessionInput) {
@@ -153,8 +153,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         delivery { 
                           ... on FilledDeliveryTerms { 
                             deliveryLines { 
-                              selectedDeliveryStrategy { ... on CompleteDeliveryStrategy { handle } ... on DeliveryStrategyReference { handle } }
-                              availableDeliveryStrategies { ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } }
+                              selectedDeliveryStrategy { 
+                                ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } 
+                                ... on DeliveryStrategyReference { handle } 
+                              }
+                              availableDeliveryStrategies { 
+                                ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } 
+                              }
                             } 
                           } 
                         }
@@ -199,8 +204,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             queue_token = negotiate_res.get('queueToken')
             
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
-            
-            # 🔥 الإصلاح الأول: زيادة وقت الانتظار لـ 3.5 ثواني لضمان انتهاء حسابات السيرفر
             time.sleep(3.5)
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
@@ -226,19 +229,26 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     gateway_id = pm.get('paymentMethodIdentifier')
                     if pm.get('name') == 'shopify_payments': break
                     
+            # استخراج سعر الشحن الدقيق
             delivery_handle = "any"
             del_amt_constraint = {"any": True}
             d_lines = seller_proposal.get('delivery', {}).get('deliveryLines', [])
             if d_lines:
                 sel_strat = d_lines[0].get('selectedDeliveryStrategy', {})
-                if sel_strat: delivery_handle = sel_strat.get('handle', 'any')
+                if sel_strat:
+                    delivery_handle = sel_strat.get('handle', 'any')
+                    d_amt = sel_strat.get('amount', {}).get('value')
+                    if d_amt:
+                        del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
                 
-                avail_strats = d_lines[0].get('availableDeliveryStrategies', [])
-                for strat in avail_strats:
-                    if strat.get('handle') == delivery_handle:
-                        d_amt = strat.get('amount', {}).get('value')
-                        if d_amt: del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
-                        break
+                # لو ملقاش السعر في المباشر، يدور في القايمة
+                if del_amt_constraint.get("any"):
+                    avail_strats = d_lines[0].get('availableDeliveryStrategies', [])
+                    for strat in avail_strats:
+                        if strat.get('handle') == delivery_handle:
+                            d_amt = strat.get('amount', {}).get('value')
+                            if d_amt: del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
+                            break
 
             seller_merch_lines = seller_proposal.get('merchandise', {}).get('merchandiseLines', [])
             submit_merch_lines = []
@@ -261,8 +271,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 submit_merch_lines = prop_vars["merchandise"]["merchandiseLines"]
                 target_lines = [{"stableId": merch_id}]
 
+            # إضافة كاشف הـ Typename لعدم تفويت أي رد ناجح
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
-            sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
+            sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){__typename ...on SubmitSuccess{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated}}}}}...on SubmitAlreadyAccepted{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}...on SubmitRejected{__typename errors{code localizedMessage}}...on SubmittedForCompletion{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}}}"""
             
             sub_vars = {
                 "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}",
@@ -271,7 +282,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            # 🔥 الإصلاح الثاني: استخدام partialStreetAddress لتطابق عنوان الـ Proposal بالمللي
                             "destination": {"partialStreetAddress": partial_address},
                             "targetMerchandiseLines": {"lines": target_lines},
                             "deliveryMethodTypes": ["SHIPPING"],
@@ -287,12 +297,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "taxes": {"proposedTotalAmount": tax_constraint},
                     "payment": {
                         "totalAmount": exact_amount_constraint,
+                        "paymentFlexibilityPaymentTermsTemplate": None, # لنسف خطأ متجر 28 (رفض التقسيط)
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
                                     "paymentMethodIdentifier": gateway_id,
                                     "sessionId": card_session_id,
-                                    "billingAddress": {"streetAddress": flat_address} # البنك بيطلب streetAddress وده صح
+                                    "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
                             "amount": exact_amount_constraint
@@ -306,14 +317,27 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
             sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
             
-            if sub_data.get('__typename') == 'SubmitRejected':
+            sub_typename = sub_data.get('__typename') if sub_data else None
+
+            if sub_typename == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                return JSONResponse(content=safe_response("Shopify System Rejected", res_sub.text[:250], price))
+                return JSONResponse(content=safe_response("Shopify System Rejected", res_sub.text[:400], price))
+            
+            if sub_typename in ['SubmitSuccess', 'SubmittedForCompletion', 'SubmitAlreadyAccepted']:
+                receipt_id = sub_data.get('receipt', {}).get('id')
+                if not receipt_id:
+                    err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
+                    if err:
+                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub.text[:400], price))
+                    return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price))
+            elif not sub_typename:
+                if not sub_data:
+                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub.text[:400], price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:250], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:400], price))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
