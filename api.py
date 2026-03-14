@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V22 (Mirror)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V23 (Double Tap)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -128,8 +128,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "postalCode": buyer["zip"], "firstName": buyer["first_name"], "lastName": buyer["last_name"],
                 "zoneCode": buyer["province"], "phone": buyer["phone"]
             }
-            
-            # العلبة الدقيقة اللي المتصفح بيبعتها
             partial_address = flat_address.copy()
             partial_address["oneTimeUse"] = False
 
@@ -190,17 +188,23 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
             }
             
+            # 🔥 الضربة الأولى: الطلب المبدئي لبدء الحسابات في السيرفر
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
             data_obj = res_prop_json.get('data')
             if not data_obj: return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
                 
-            negotiate_res = data_obj.get('session', {}).get('negotiate', {}).get('result', {})
-            queue_token = negotiate_res.get('queueToken')
-            
+            queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
+            
+            # 🔥 الانتظار لتحديث الشروط (PENDING_TERMS)
             time.sleep(3.5)
+            
+            # 🔥 الضربة الثانية: الطلب النهائي بعد اكتمال الحسابات (يضمن استقرار الشحن والضريبة)
+            res_prop2 = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
+            res_prop_json2 = res_prop2.json()
+            negotiate_res = res_prop_json2.get('data', {}).get('session', {}).get('negotiate', {}).get('result', {})
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
@@ -271,16 +275,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "input": {
                     "sessionInput": {"sessionToken": session_token},
                     "queueToken": queue_token,
-                    "discounts": {"lines": [], "acceptUnexpectedDiscounts": True}, # من اكتشافات المتصفح
+                    "discounts": {"lines": [], "acceptUnexpectedDiscounts": True},
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": {"partialStreetAddress": partial_address}, # العلبة السحرية رجعت
+                            "destination": {"partialStreetAddress": partial_address},
                             "targetMerchandiseLines": {"lines": target_lines},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
                             "selectedDeliveryStrategy": {
                                 "deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False},
-                                "options": {"phone": buyer["phone"]} # إضافة التليفون الإجبارية المخفية
+                                "options": {"phone": buyer["phone"]}
                             },
                             "expectedTotalPrice": del_amt_constraint
                         }],
@@ -292,7 +296,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "merchandise": {"merchandiseLines": submit_merch_lines},
                     "taxes": {"proposedTotalAmount": tax_constraint},
                     "payment": {
-                        "totalAmount": {"any": True}, # وداعا لحسابات الدفع المعقدة!
+                        "totalAmount": {"any": True},
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
@@ -301,7 +305,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
-                            "amount": {"any": True} # وداعا لحسابات الدفع المعقدة!
+                            "amount": {"any": True}
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
