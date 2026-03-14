@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V1"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V2"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -138,7 +138,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken sellerProposal{total{value{amount currencyCode}}delivery{deliveryLines{selectedDeliveryStrategy{handle}}}merchandise{merchandiseLines{stableId quantity{items{value}}merchandise{...on ProductVariantMerchandise{variantId}}}}}}}}}}"""
+            # =========================================================
+            # التحديث الجذري لهيكل الـ GraphQL (استخدام Inline Fragments)
+            # =========================================================
+            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken sellerProposal{total{...on MoneyValueConstraint{value{amount currencyCode}}}delivery{deliveryLines{selectedDeliveryStrategy{handle}}}merchandise{merchandiseLines{stableId merchandise{...on ProductVariantMerchandise{variantId}}}}}}}}}}"""
             
             prop_vars = {
                 "sessionInput": {"sessionToken": session_token},
@@ -174,35 +177,29 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
             time.sleep(1)
 
-            # =========================================================
-            # الرادار الديناميكي (استخراج الداتا من شوبي فاي لعدم الرفض)
-            # =========================================================
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
-            # 1. استخراج المبلغ الدقيق والعملة
             exact_amount = {"any": True}
             currency = "USD"
             total_val = seller_proposal.get('total', {}).get('value')
             if total_val and 'amount' in total_val and 'currencyCode' in total_val:
                 exact_amount = {"amount": total_val['amount'], "currencyCode": total_val['currencyCode']}
                 currency = total_val['currencyCode']
-                price = f"{total_val['amount']} {currency}" # تحديث السعر المعروض
+                price = f"{total_val['amount']} {currency}"
                 
-            # 2. استخراج كود الشحن الإجباري
             delivery_handle = "any"
             d_lines = seller_proposal.get('delivery', {}).get('deliveryLines', [])
             if d_lines:
                 handle = d_lines[0].get('selectedDeliveryStrategy', {}).get('handle')
                 if handle: delivery_handle = handle
 
-            # 3. استخراج كل المنتجات (بما فيها المنتجات الإجبارية زي التأمين)
             seller_merch_lines = seller_proposal.get('merchandise', {}).get('merchandiseLines', [])
             submit_merch_lines = []
             target_lines = []
             
             for line in seller_merch_lines:
                 s_id = line.get('stableId')
-                qty = line.get('quantity', {}).get('items', {}).get('value', 1)
+                qty = 1 # تم تثبيتها بـ 1 لتجنب خطأ الـ Unions في الاستخراج
                 m_id = line.get('merchandise', {}).get('variantId')
                 if s_id and m_id:
                     submit_merch_lines.append({
@@ -212,13 +209,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     })
                     target_lines.append({"stableId": s_id})
             
-            if not submit_merch_lines: # بديل لو فشل الاستخراج
+            if not submit_merch_lines:
                 submit_merch_lines = prop_vars["merchandise"]["merchandiseLines"]
                 target_lines = [{"stableId": merch_id}]
 
-            # =========================================================
-            # بناء طلب الدفع النهائي المطابق 100%
-            # =========================================================
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
             
@@ -240,7 +234,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     },
                     "merchandise": {"merchandiseLines": submit_merch_lines},
                     "payment": {
-                        "totalAmount": exact_amount, # المبلغ الدقيق
+                        "totalAmount": exact_amount,
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
@@ -249,7 +243,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
-                            "amount": exact_amount # المبلغ الدقيق
+                            "amount": exact_amount
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
