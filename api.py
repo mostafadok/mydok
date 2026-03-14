@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V2"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V3"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -139,9 +139,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             merch_id = str(uuid.uuid4())
             
             # =========================================================
-            # التحديث الجذري لهيكل الـ GraphQL (استخدام Inline Fragments)
+            # التحديث الجذري النهائي لتغطية جميع الـ Unions في شوبي فاي
             # =========================================================
-            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken sellerProposal{total{...on MoneyValueConstraint{value{amount currencyCode}}}delivery{deliveryLines{selectedDeliveryStrategy{handle}}}merchandise{merchandiseLines{stableId merchandise{...on ProductVariantMerchandise{variantId}}}}}}}}}}"""
+            prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken sellerProposal{total{...on MoneyValueConstraint{value{amount currencyCode}}}delivery{...on FilledDeliveryTerms{deliveryLines{selectedDeliveryStrategy{handle}}}}merchandise{...on FilledMerchandiseTerms{merchandiseLines{stableId merchandise{...on ProductVariantMerchandise{variantId}...on ContextualizedProductVariantMerchandise{variantId}}}}}}}}}}}}"""
             
             prop_vars = {
                 "sessionInput": {"sessionToken": session_token},
@@ -199,13 +199,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             for line in seller_merch_lines:
                 s_id = line.get('stableId')
-                qty = 1 # تم تثبيتها بـ 1 لتجنب خطأ الـ Unions في الاستخراج
                 m_id = line.get('merchandise', {}).get('variantId')
                 if s_id and m_id:
                     submit_merch_lines.append({
                         "stableId": s_id,
                         "merchandise": {"productVariantReference": {"id": m_id.replace("ProductVariant", "ProductVariantMerchandise"), "variantId": m_id}},
-                        "quantity": {"items": {"value": qty}}, "expectedTotalPrice": {"any": True}
+                        "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}
                     })
                     target_lines.append({"stableId": s_id})
             
