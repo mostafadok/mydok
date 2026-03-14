@@ -22,7 +22,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python X-Ray"):
+def safe_response(msg, raw_data, price, gate="Python X-Ray V2"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -137,7 +137,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             card_session_id = res_pci.json().get("id")
 
             # =========================================================
-            # التعديل الصارم: بنية العنوان المطلوبة بالضبط لـ GraphQL
+            # التعديل النهائي الصارم (إضافة streetAddress المفقودة)
             # =========================================================
             flat_address = {
                 "address1": buyer["address1"], 
@@ -161,7 +161,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             prop_vars = {
                 "delivery": {
                     "deliveryLines": [{
-                        "destination": flat_address,  # تم إسناد العنوان مباشرة هنا بدون partialStreetAddress
+                        "destination": {"streetAddress": flat_address}, # <-- هنا تم التصحيح الجذري للخطأ
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"],
                         "destinationChanged": True,
@@ -173,7 +173,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "payment": {
                     "totalAmount": {"any": True},
                     "paymentLines": [],
-                    "billingAddress": flat_address
+                    "billingAddress": {"streetAddress": flat_address}
                 },
                 "merchandise": {
                     "merchandiseLines": [{
@@ -208,7 +208,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "queueToken": queue_token,
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": flat_address, # تم إسناد العنوان مباشرة هنا
+                            "destination": {"streetAddress": flat_address},
                             "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
@@ -225,12 +225,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                 "directPaymentMethod": {
                                     "paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319",
                                     "sessionId": card_session_id,
-                                    "billingAddress": flat_address
+                                    "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
                             "amount": {"any": True}
                         }],
-                        "billingAddress": flat_address
+                        "billingAddress": {"streetAddress": flat_address}
                     },
                     "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
                 }
