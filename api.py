@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V7"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V8"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:250] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -180,7 +180,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             """
             
-            # تم إضافة "properties": [] لتفادي خطأ Expected value to not be null
             prop_vars = {
                 "sessionInput": {"sessionToken": session_token},
                 "delivery": {
@@ -217,11 +216,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
-            exact_amount = {"any": True}
+            # تم إصلاح غلاف السعر هنا (تم إضافة {"value": ...})
+            exact_amount_constraint = {"any": True}
             currency = "USD"
             total_val = seller_proposal.get('total', {}).get('value')
             if total_val and 'amount' in total_val and 'currencyCode' in total_val:
-                exact_amount = {"amount": total_val['amount'], "currencyCode": total_val['currencyCode']}
+                exact_amount_constraint = {"value": {"amount": total_val['amount'], "currencyCode": total_val['currencyCode']}}
                 currency = total_val['currencyCode']
                 price = f"{total_val['amount']} {currency}"
                 
@@ -239,7 +239,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 s_id = line.get('stableId')
                 m_id = line.get('merchandise', {}).get('variantId')
                 if s_id and m_id:
-                    # تم إضافة "properties": [] هنا أيضاً
                     submit_merch_lines.append({
                         "stableId": s_id,
                         "merchandise": {"productVariantReference": {"id": m_id.replace("ProductVariant", "ProductVariantMerchandise"), "variantId": m_id, "properties": []}},
@@ -268,11 +267,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                             "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False}, "options": {}},
                             "expectedTotalPrice": {"any": True}
                         }],
+                        "noDeliveryRequired": [],    # تم إضافتها هنا
+                        "useProgressiveRates": False, # تم إضافتها هنا
                         "supportsSplitShipping": True
                     },
                     "merchandise": {"merchandiseLines": submit_merch_lines},
                     "payment": {
-                        "totalAmount": exact_amount,
+                        "totalAmount": exact_amount_constraint, # تم إصلاح السعر هنا
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
@@ -281,7 +282,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
-                            "amount": exact_amount
+                            "amount": exact_amount_constraint # تم إصلاح السعر هنا
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
