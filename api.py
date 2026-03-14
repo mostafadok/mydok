@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V17"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V18"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -138,7 +138,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             merch_id = str(uuid.uuid4())
             
-            # تعديل الاستعلام لجلب المبلغ الإجمالي لخط الشحن (amount) بدلاً من الاستراتيجية فقط
+            # 🔥 العودة لهيكل Proposal الصلب والمثالي (بدون كلمة amount جوه deliveryLines المباشرة)
             prop_query = """
             query Proposal($delivery: DeliveryTermsInput, $payment: PaymentTermInput, $merchandise: MerchandiseTermInput, $buyerIdentity: BuyerIdentityTermInput, $sessionInput: SessionTokenInput!) {
               session(sessionInput: $sessionInput) {
@@ -153,8 +153,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         delivery { 
                           ... on FilledDeliveryTerms { 
                             deliveryLines { 
-                              amount { ... on MoneyValueConstraint { value { amount currencyCode } } }
-                              selectedDeliveryStrategy { ... on CompleteDeliveryStrategy { handle } ... on DeliveryStrategyReference { handle } }
+                              selectedDeliveryStrategy { ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } ... on DeliveryStrategyReference { handle } }
+                              availableDeliveryStrategies { ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } }
                             } 
                           } 
                         }
@@ -224,7 +224,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     gateway_id = pm.get('paymentMethodIdentifier')
                     if pm.get('name') == 'shopify_payments': break
                     
-            # التحديث الجذري: استخراج سعر خط الشحن الإجمالي (شامل مناولة/تغليف)
             delivery_handle = "any"
             del_amt_constraint = {"any": True}
             d_lines = seller_proposal.get('delivery', {}).get('deliveryLines', [])
@@ -232,10 +231,17 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 sel_strat = d_lines[0].get('selectedDeliveryStrategy', {})
                 if sel_strat:
                     delivery_handle = sel_strat.get('handle', 'any')
+                    d_amt = sel_strat.get('amount', {}).get('value')
+                    if d_amt:
+                        del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
                 
-                d_amt = d_lines[0].get('amount', {}).get('value')
-                if d_amt:
-                    del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
+                if del_amt_constraint.get("any"):
+                    avail_strats = d_lines[0].get('availableDeliveryStrategies', [])
+                    for strat in avail_strats:
+                        if strat.get('handle') == delivery_handle:
+                            d_amt = strat.get('amount', {}).get('value')
+                            if d_amt: del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
+                            break
 
             seller_merch_lines = seller_proposal.get('merchandise', {}).get('merchandiseLines', [])
             submit_merch_lines = []
@@ -304,6 +310,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             sub_typename = sub_data.get('__typename') if sub_data else None
 
+            # المترجم الأمني لرسائل الرفض (من V17)
             if sub_typename == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 if errs:
