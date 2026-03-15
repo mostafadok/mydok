@@ -1,12 +1,15 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from curl_cffi import requests  # 🔥 مكتبة التخفي السحرية بديلة ريكويستس العادية
+from curl_cffi import requests
 import re
 import uuid
 import random
 import time
+import urllib3
 from html import unescape
 from urllib.parse import urlparse
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
@@ -18,7 +21,7 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Python Dynamic V26 (The Ghost)"):
+def safe_response(msg, raw_data, price, gate="Python Dynamic V27 (Hunter)"):
     raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
     final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Declined" in msg or "Rejected" in msg or "Empty" in msg or "Blocked" in msg) else msg
     clean_price = str(price).replace('$', '').strip() if price else "-"
@@ -39,17 +42,16 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
         proxy_url = format_proxy(proxy)
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
+        # 🔥 تعديل العنوان لولاية Delaware (DE) زيرو ضرائب لتقليل السعر
         buyer = {
             "email": f"j.doe{random.randint(10000,99999)}@gmail.com", "first_name": "James", "last_name": "Smith",
-            "address1": "4024 College Point Blvd", "city": "Flushing", "province": "NY", "zip": "11354", "country": "US", "phone": "5862156546"
+            "address1": "8 The Green", "city": "Dover", "province": "DE", "zip": "19901", "country": "US", "phone": "3025551234"
         }
 
-        # 🔥 تفعيل وضع التخفي (impersonate) لمحاكاة كروم 120 ببروتوكول HTTP/2
         with requests.Session(impersonate="chrome120") as session:
             session.verify = False
             if proxies: session.proxies.update(proxies)
             
-            # الهيدرز البشرية المطابقة تماماً لمتصفح كروم
             session.headers.update({
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -71,15 +73,19 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 if r1.status_code == 200:
                     data = r1.json()
                     prods = data.get('products', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                    
+                    # 🔥 خوارزمية صيد أرخص منتج في المتجر
+                    lowest_price = float('inf')
                     for p in prods:
                         for v in p.get('variants', []):
                             if v.get('available'):
                                 pr = float(v.get('price', 0))
                                 if pr > 10000: pr /= 100.0
-                                if pr > 0:
-                                    variant_id, price = str(v.get('id')), "{:.2f}".format(pr)
-                                    break
-                        if variant_id: break
+                                if 0 < pr < lowest_price:
+                                    lowest_price = pr
+                                    variant_id = str(v.get('id'))
+                                    price = "{:.2f}".format(pr)
+                                    
                 else:
                     return JSONResponse(content=safe_response("Blocked at Product Fetch", f"HTTP {r1.status_code}", "-"))
             except Exception as e:
@@ -218,7 +224,7 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
                 "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": None, "rememberMe": False}
             }
             
-            # 🔥 الضربة الأولى: تحفيز السيرفر للحساب
+            # 🔥 الضربة الأولى
             res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers)
             res_prop_json = res_prop.json()
             
@@ -228,7 +234,6 @@ def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query
             queue_token = data_obj.get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
             if not queue_token: return JSONResponse(content=safe_response("Proposal Failed", res_prop.text[:250], price))
             
-            # 🔥 الانتظار الذكي (Double Tap)
             time.sleep(4.5)
             
             # 🔥 الضربة الثانية
