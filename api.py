@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import threading
+import os
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -95,9 +96,6 @@ def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str =
                             "password": p_parsed.password
                         }
 
-                    # =======================================================
-                    # التعديل هنا: إضافة أوامر تمنع تعليق السيرفر في الوضع المخفي
-                    # =======================================================
                     browser = p.chromium.launch(
                         headless=True, 
                         proxy=proxy_settings,
@@ -108,7 +106,7 @@ def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str =
                             "--disable-setuid-sandbox", 
                             "--disable-dev-shm-usage", 
                             "--disable-gpu",
-                            "--window-size=1280,720" # إجبار المتصفح المخفي على حجم ثابت لمنع اختفاء الأزرار
+                            "--window-size=1280,720"
                         ]
                     )
                     
@@ -118,9 +116,6 @@ def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str =
                         ignore_https_errors=True
                     )
                     
-                    # =======================================================
-                    # التخفي المتقدم لمنع حظر شوبيفاي للمتصفح المخفي
-                    # =======================================================
                     context.add_init_script("""
                         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                         Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
@@ -341,4 +336,5 @@ def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str =
         return JSONResponse(content=safe_response(f"Critical Error: {str(e)}"))
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("api:app", host="0.0.0.0", port=port)
