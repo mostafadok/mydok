@@ -1,19 +1,20 @@
-# استخدام بيئة بايثون رسمية وخفيفة
-FROM python:3.11-slim
+# استخدام النسخة الرسمية من مايكروسوفت التي تحتوي على كل ملفات النظام لتشغيل المتصفحات
+FROM mcr.microsoft.com/playwright/python:v1.42.0-jammy
 
-# إعداد مجلد العمل داخل السيرفر
+# تعيين مجلد العمل داخل السيرفر
 WORKDIR /app
 
-# نسخ ملف المكاتب وتثبيتها
+# نسخ ملف المكتبات
 COPY requirements.txt .
+
+# تثبيت المكتبات
 RUN pip install --no-cache-dir -r requirements.txt
 
-# تثبيت متصفح Playwright المخفي واعتمادات اللينكس اللازمة لتشغيله
-RUN playwright install chromium
-RUN playwright install-deps
+# نسخ كود البايثون
+COPY api.py .
 
-# نسخ باقي الملفات (السكربت)
-COPY . .
+# تحديد البورت
+EXPOSE 8000
 
-# تشغيل التطبيق (Render سيقوم بتوفير الـ PORT تلقائياً)
+# أمر تشغيل السيرفر عند بدء ريندر
 CMD ["python", "api.py"]
