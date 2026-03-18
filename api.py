@@ -336,5 +336,6 @@ def shopify_hybrid_api(cc: str = Query(...), url: str = Query(...), proxy: str =
         return JSONResponse(content=safe_response(f"Critical Error: {str(e)}"))
 
 if __name__ == "__main__":
+    # تم تعديل البورت ليعمل بشكل ديناميكي مع استضافة Render
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("api:app", host="0.0.0.0", port=port)
